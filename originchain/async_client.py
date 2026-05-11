@@ -16,7 +16,13 @@ from typing import Any, List, Literal, Mapping, Optional
 
 import httpx
 
-from .client import DEFAULT_MAX_RETRIES, DEFAULT_TIMEOUT_S, RETRYABLE_STATUSES
+from .client import (
+    DEFAULT_MAX_RETRIES,
+    DEFAULT_TIMEOUT_S,
+    RETRYABLE_STATUSES,
+    _MUTATING_METHODS,
+    _new_idempotency_key,
+)
 from .errors import (
     OCAuthError,
     OCError,
@@ -370,6 +376,15 @@ class AsyncOriginChain:
         content: Optional[bytes] = None,
         headers: Optional[dict[str, str]] = None,
     ) -> httpx.Response:
+        # Auto-Idempotency-Key on mutating calls. See the sync client's
+        # `_request` for the rationale; engine cache is LRU-bounded so
+        # fresh-per-call is safe, and callers retain override semantics
+        # by passing the header explicitly.
+        if method.upper() in _MUTATING_METHODS:
+            if headers is None:
+                headers = {"Idempotency-Key": _new_idempotency_key()}
+            elif not any(k.lower() == "idempotency-key" for k in headers):
+                headers = {**headers, "Idempotency-Key": _new_idempotency_key()}
         last_exc: Optional[Exception] = None
         for attempt in range(self.max_retries + 1):
             try:
