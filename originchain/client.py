@@ -6,6 +6,7 @@ from __future__ import annotations
 import json as _json
 import os
 import time
+import uuid
 import warnings
 from typing import Any, Iterable, List, Literal, Mapping, Optional
 
@@ -38,6 +39,15 @@ from .models import (
 DEFAULT_TIMEOUT_S = 30.0
 DEFAULT_MAX_RETRIES = 3
 RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
+_MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+def _new_idempotency_key() -> str:
+    """Generate a fresh Idempotency-Key. The engine's server-side cache is
+    bounded (LRU 10k entries + 24h TTL), so fresh-per-call is safe and
+    makes retries on the same request object idempotent without the caller
+    having to think about it."""
+    return uuid.uuid4().hex
 
 
 class _Schemas:
@@ -79,7 +89,10 @@ class _Rows:
         idempotency_key: Optional[str] = None,
     ) -> dict[str, Any]:
         params = {"expect": "insert"} if expect_insert else None
-        headers = self._idem(idempotency_key)
+        # Explicit caller key wins; otherwise `_request` auto-fills.
+        headers = (
+            {"Idempotency-Key": idempotency_key} if idempotency_key else None
+        )
         return self._p._request(
             "POST",
             f"/v1/tenants/{self._p.tenant}/rows/{schema}",
@@ -99,21 +112,23 @@ class _Rows:
     ) -> int:
         """Upload `rows` in chunks of `chunk`. Returns total rows accepted.
 
-        Generates a per-chunk idempotency key derived from the caller's
-        key so partial retries don't double-count. If `idempotency_key`
-        is unset, no idempotency is used (server will accept duplicates
-        on retries — caller's choice)."""
+        Each chunk gets a deterministic per-chunk key derived from a single
+        base UUID — so a partial-retry of the same `put_batch` call hits
+        the same cache slots and the engine dedupes correctly. The caller
+        can pass a stable `idempotency_key` to extend dedup across process
+        restarts; otherwise we mint a fresh base for this single call."""
         params = {"expect": "insert"} if expect_insert else None
+        base_idem = idempotency_key or _new_idempotency_key()
         total = 0
         chunk_buf: list[Mapping[str, Any]] = []
         for i, r in enumerate(rows):
             chunk_buf.append(r)
             if len(chunk_buf) >= chunk:
-                total += self._send_batch(schema, chunk_buf, params, idempotency_key, i // chunk)
+                total += self._send_batch(schema, chunk_buf, params, base_idem, i // chunk)
                 chunk_buf = []
         if chunk_buf:
             total += self._send_batch(
-                schema, chunk_buf, params, idempotency_key, total // chunk
+                schema, chunk_buf, params, base_idem, total // chunk
             )
         return total
 
@@ -122,24 +137,17 @@ class _Rows:
         schema: str,
         rows: list[Mapping[str, Any]],
         params: Optional[dict],
-        base_idem: Optional[str],
+        base_idem: str,
         chunk_no: int,
     ) -> int:
-        headers = self._idem(f"{base_idem}-c{chunk_no}" if base_idem else None)
         resp = self._p._request(
             "POST",
             f"/v1/tenants/{self._p.tenant}/rows/{schema}/_batch",
             json=list(rows),
             params=params,
-            headers=headers,
+            headers={"Idempotency-Key": f"{base_idem}-c{chunk_no}"},
         )
         return resp.json().get("inserted", 0)
-
-    @staticmethod
-    def _idem(key: Optional[str]) -> dict[str, str]:
-        if key is None:
-            return {}
-        return {"Idempotency-Key": key}
 
 
 class _Graph:
@@ -475,6 +483,16 @@ class OriginChain:
         content: Optional[bytes] = None,
         headers: Optional[dict[str, str]] = None,
     ) -> httpx.Response:
+        # Auto-add Idempotency-Key on every mutating call so a network
+        # blip / 502 retry deduplicates. The engine's idempotency cache
+        # is LRU-bounded (10k entries) so a fresh UUID per call is safe;
+        # callers who want cross-process retry semantics can still pass
+        # a stable key in `headers`.
+        if method.upper() in _MUTATING_METHODS:
+            if headers is None:
+                headers = {"Idempotency-Key": _new_idempotency_key()}
+            elif not any(k.lower() == "idempotency-key" for k in headers):
+                headers = {**headers, "Idempotency-Key": _new_idempotency_key()}
         last_exc: Optional[Exception] = None
         for attempt in range(self.max_retries + 1):
             try:
