@@ -20,6 +20,7 @@ from .client import (
     DEFAULT_MAX_RETRIES,
     DEFAULT_TIMEOUT_S,
     RETRYABLE_STATUSES,
+    _HTTP2_AVAILABLE,
     _MUTATING_METHODS,
     _new_idempotency_key,
 )
@@ -203,6 +204,7 @@ class AsyncOriginChain:
             base_url=self.base_url,
             timeout=timeout,
             verify=verify,
+            http2=_HTTP2_AVAILABLE,
             headers={
                 "Authorization": f"Bearer {bearer}",
                 "User-Agent": user_agent or "originchain-python/0.3.0",

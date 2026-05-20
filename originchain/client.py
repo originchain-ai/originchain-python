@@ -11,6 +11,15 @@ import warnings
 from typing import Any, Iterable, List, Literal, Mapping, Optional
 
 import httpx
+from importlib.util import find_spec
+
+# Auto-enable HTTP/2 if the optional `h2` package is installed. With ALPN
+# now advertised by the engine, a persistent client can multiplex many
+# requests over one TCP+TLS connection instead of paying a fresh
+# handshake (~300 ms from outside the engine's region) on every call.
+# `pip install originchain[http2]` pulls in `h2`; bare `pip install
+# originchain` keeps HTTP/1.1 so existing installs don't break.
+_HTTP2_AVAILABLE = find_spec("h2") is not None
 
 from .errors import (
     OCAuthError,
@@ -260,6 +269,7 @@ class OriginChain:
             base_url=self.base_url,
             timeout=timeout,
             verify=verify,
+            http2=_HTTP2_AVAILABLE,
             headers={
                 "Authorization": f"Bearer {bearer}",
                 "User-Agent": user_agent or "originchain-python/0.3.0",
