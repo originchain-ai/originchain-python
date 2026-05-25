@@ -2,11 +2,15 @@
 
 Official Python client for [OriginChain](https://originchain.ai).
 
+> Other languages: TypeScript / JavaScript → [`@originchain/sdk`](https://www.npmjs.com/package/@originchain/sdk) · Go → [`github.com/originchain-ai/originchain-go`](https://github.com/originchain-ai/originchain-go) · raw HTTP → [originchain.ai/docs](https://originchain.ai/docs).
+
 ## Install
 
 ```bash
 pip install originchain
 ```
+
+HTTP/2 is enabled by default — multiplexed cross-region calls save ~300 ms each vs HTTP/1.1.
 
 ## Quick start
 
