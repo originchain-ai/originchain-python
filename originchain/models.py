@@ -3,12 +3,12 @@
 These mirror the JSON wire shapes emitted by ``oc-http``'s preview
 endpoints (see ``backend/crates/oc-http/src/preview_endpoints.rs``).
 Field names match the wire snake_case verbatim. Every dataclass is
-``frozen=True`` so they're hashable and immutable — callers can stash
+``frozen=True`` so they're hashable and immutable - callers can stash
 results in ``set`` / ``dict`` keys without worrying about mutation.
 
 Decoders (``_from_payload`` classmethods) are kept tolerant of extra
 fields so a server-side addition doesn't immediately break old clients
-— unknown keys get dropped, known keys are coerced to the declared type
+- unknown keys get dropped, known keys are coerced to the declared type
 where it's cheap (e.g. ``int`` from ``float`` for depths, ``str`` from
 non-string PKs that the substrate handed back as a JSON-stringified
 fallback). If the server changes the shape in a non-backward-compatible
@@ -28,7 +28,7 @@ from typing import Any, Mapping, Optional, Tuple, Union
 class SqlSelect:
     """``{"kind": "select", "rows": [...]}``. The substrate ran a SELECT
     against the row k/v store and returned the rows verbatim. ``rows``
-    is the raw JSON value list — each row is whatever shape the
+    is the raw JSON value list - each row is whatever shape the
     schema's projection emits."""
 
     rows: Tuple[Any, ...]
@@ -38,7 +38,7 @@ class SqlSelect:
 @dataclass(frozen=True)
 class SqlInsert:
     """``{"kind": "insert", "schema": "...", "rows": [...]}``. Translated
-    INSERT payload — the caller is expected to re-issue against
+    INSERT payload - the caller is expected to re-issue against
     ``/v1/tenants/:t/rows/:schema`` with idempotency. We don't auto-
     execute writes from ``/sql`` in v0; see preview_endpoints.rs."""
 
@@ -50,7 +50,7 @@ class SqlInsert:
 @dataclass(frozen=True)
 class SqlDelete:
     """``{"kind": "delete", "schema": "...", "pk": "..."}``. Translated
-    DELETE — caller re-issues against ``/v1/tenants/:t/rows/:schema/:pk``."""
+    DELETE - caller re-issues against ``/v1/tenants/:t/rows/:schema/:pk``."""
 
     schema: str
     pk: str
@@ -85,7 +85,7 @@ def _decode_sql_response(payload: Mapping[str, Any]) -> SqlResponse:
 @dataclass(frozen=True)
 class VectorHit:
     """One topk hit: ``{"id": "...", "score": 0.93}``. Score semantics
-    depend on the metric the index was built with — cosine and dot
+    depend on the metric the index was built with - cosine and dot
     return higher-is-closer, l2 returns lower-is-closer. The SDK doesn't
     re-sort or normalise; the substrate already returns hits in the
     right order for the metric."""
@@ -149,7 +149,7 @@ class GraphBfsHit:
 @dataclass(frozen=True)
 class GraphPath:
     """``/graph/:schema/path`` response. ``reachable`` is the only field
-    the substrate returns in v0 — the actual path itself is not
+    the substrate returns in v0 - the actual path itself is not
     materialised. v1 will surface the edge list."""
 
     reachable: bool

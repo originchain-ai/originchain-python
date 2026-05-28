@@ -10,7 +10,7 @@ Official Python client for [OriginChain](https://originchain.ai).
 pip install originchain
 ```
 
-HTTP/2 is enabled by default — multiplexed cross-region calls save ~300 ms each vs HTTP/1.1.
+HTTP/2 is enabled by default - multiplexed cross-region calls save ~300 ms each vs HTTP/1.1.
 
 ## Quick start
 
@@ -91,7 +91,7 @@ print(result.cost)
 ## Auth
 
 Bearer tokens are minted in the OriginChain console and scoped to a
-single instance. Treat them like database passwords — env vars or
+single instance. Treat them like database passwords - env vars or
 secrets manager, never committed.
 
 ## Errors

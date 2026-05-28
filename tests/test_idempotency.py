@@ -86,7 +86,7 @@ def test_rows_put_auto_gens_when_caller_passes_none(mock_client) -> None:
 
 def test_rows_put_batch_per_chunk_keys_share_base(mock_client) -> None:
     """A single ``put_batch`` call must derive each chunk's key from a
-    single base UUID — that way a partial-retry of the same call hits the
+    single base UUID - that way a partial-retry of the same call hits the
     same cache slots and the engine dedupes correctly. A regression that
     minted fresh keys per chunk would break this guarantee silently."""
     seen: list[httpx.Request] = []

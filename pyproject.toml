@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "originchain"
 version = "0.4.0"
-description = "Official Python client for OriginChain — managed database for AI applications."
+description = "Official Python client for OriginChain - managed database for AI applications."
 readme = "README.md"
 authors = [{ name = "Silicoyn Technologies", email = "support@originchain.ai" }]
 license = { text = "Proprietary" }
@@ -21,7 +21,7 @@ dependencies = [
   "httpx>=0.27,<1",
   # HTTP/2 is now a hard dep (was optional `[http2]` extra in 0.3.x).
   # Multiplexing + ALPN-negotiated h2 saves ~300 ms per call on cross-
-  # region requests vs HTTP/1.1 — the savings outweigh the ~250 KB
+  # region requests vs HTTP/1.1 - the savings outweigh the ~250 KB
   # wheel size hit for the median user.
   "h2>=4,<5",
   "typing-extensions>=4.7",
@@ -29,7 +29,7 @@ dependencies = [
 
 [project.optional-dependencies]
 async = []  # async client uses httpx directly; no extras required.
-# Back-compat alias — the 0.3.x `[http2]` extra is now a no-op since h2
+# Back-compat alias - the 0.3.x `[http2]` extra is now a no-op since h2
 # is a hard dep. Kept so `pip install originchain[http2]` doesn't break
 # existing requirements files / CI pins.
 http2 = []

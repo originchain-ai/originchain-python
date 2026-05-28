@@ -2,8 +2,8 @@
 
 Two clients ship in this package:
 
-- :class:`OriginChain` — synchronous, suitable for scripts and Jupyter.
-- :class:`AsyncOriginChain` — asyncio, suitable for ASGI / async data
+- :class:`OriginChain` - synchronous, suitable for scripts and Jupyter.
+- :class:`AsyncOriginChain` - asyncio, suitable for ASGI / async data
   pipelines.
 
 Both wrap the same ``/v1`` HTTP surface that the engine exposes; they

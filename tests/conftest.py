@@ -1,7 +1,7 @@
 """Shared test fixtures.
 
 Tests use ``httpx.MockTransport`` to intercept requests at the transport
-level — no real socket, no live engine. The ``mock_client`` fixture
+level - no real socket, no live engine. The ``mock_client`` fixture
 returns an ``OriginChain`` whose underlying ``httpx.Client`` routes
 through a caller-supplied handler. The handler is the assertion
 surface: it inspects the incoming request and returns whatever
@@ -23,7 +23,7 @@ def make_client(handler: Callable[[httpx.Request], httpx.Response]) -> OriginCha
 
     We can't reuse ``OriginChain.__init__`` directly because it builds
     its own httpx.Client. Instead we construct, then swap. ``max_retries
-    =0`` keeps tests deterministic — retries would re-call the handler
+    =0`` keeps tests deterministic - retries would re-call the handler
     and confuse assertion counts."""
     client = OriginChain(
         base_url="http://test.invalid",
