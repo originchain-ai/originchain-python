@@ -12,7 +12,7 @@ For manual validation:
 Caveats:
 - The tests assume a schema named ``trading.orders`` already exists with
   a string PK ``order_id``. If it doesn't, the SQL test is skipped.
-- The vector / FTS / graph tests are best-effort — they don't fail the
+- The vector / FTS / graph tests are best-effort - they don't fail the
   suite if the relevant add-on isn't entitled (402 is treated as
   "skip, not fail" so the engine doesn't need every preview surface
   enabled to run a smoke).

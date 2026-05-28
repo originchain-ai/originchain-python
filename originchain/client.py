@@ -1,5 +1,5 @@
 """Synchronous client. The async variant in :mod:`async_client` mirrors
-this surface exactly — keep both in sync when adding methods."""
+this surface exactly - keep both in sync when adding methods."""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ from .models import (
 )
 
 
-# Default behaviour — override per-call if needed.
+# Default behaviour - override per-call if needed.
 DEFAULT_TIMEOUT_S = 30.0
 DEFAULT_MAX_RETRIES = 3
 RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
@@ -122,7 +122,7 @@ class _Rows:
         """Upload `rows` in chunks of `chunk`. Returns total rows accepted.
 
         Each chunk gets a deterministic per-chunk key derived from a single
-        base UUID — so a partial-retry of the same `put_batch` call hits
+        base UUID - so a partial-retry of the same `put_batch` call hits
         the same cache slots and the engine dedupes correctly. The caller
         can pass a stable `idempotency_key` to extend dedup across process
         restarts; otherwise we mint a fresh base for this single call."""
@@ -283,7 +283,7 @@ class OriginChain:
     def from_env(cls, **kwargs: Any) -> "OriginChain":
         """Build a client from ``OC_BASE_URL``, ``OC_BEARER``, ``OC_TENANT``.
 
-        Raises :class:`OCError` if any are missing — callers should set
+        Raises :class:`OCError` if any are missing - callers should set
         them via their secrets manager, not commit them."""
         try:
             base_url = os.environ["OC_BASE_URL"]
@@ -322,7 +322,7 @@ class OriginChain:
 
         - ``SqlSelect``: server ran the SELECT and returned rows.
         - ``SqlInsert``: server translated the INSERT into the typed
-          ``/rows/:schema`` payload — caller re-issues with idempotency.
+          ``/rows/:schema`` payload - caller re-issues with idempotency.
         - ``SqlDelete``: server translated the DELETE into a typed PK
           for ``/rows/:schema/:pk``.
 
@@ -340,7 +340,7 @@ class OriginChain:
     def sql_one(self, query: str) -> Optional[dict[str, Any]]:
         """Convenience: run a SELECT and return the first row (or
         ``None`` if no rows). Raises :class:`OCValidationError` if the
-        statement isn't a SELECT — there's no "first" of an INSERT or
+        statement isn't a SELECT - there's no "first" of an INSERT or
         DELETE translation."""
         resp = self.sql(query)
         if not isinstance(resp, SqlSelect):
@@ -370,7 +370,7 @@ class OriginChain:
         substrate validates the embedding length matches the table's
         configured dimensionality on every put. ``metric`` is one of
         ``"cosine"`` / ``"dot"`` / ``"l2"`` and is checked against the
-        first put's choice for the table — changing it after the index
+        first put's choice for the table - changing it after the index
         is built returns 400."""
         body: dict[str, Any] = {
             "id": id,
@@ -402,7 +402,7 @@ class OriginChain:
         ``mode`` selects the recall/latency profile: ``"fast"`` favours
         latency, ``"high_recall"`` favours recall. When omitted the
         server defaults to ``"high_recall"``. ``filter`` is a metadata
-        equality filter — non-empty filters force an HNSW + post-filter
+        equality filter - non-empty filters force an HNSW + post-filter
         codepath server-side."""
         body: dict[str, Any] = {
             "query": list(query),
@@ -569,7 +569,7 @@ class OriginChain:
         if status in (401, 403):
             raise OCAuthError(msg or "unauthorized", status=status, body=body)
         if status == 402:
-            # 402 body shape is the canonical addon-required envelope —
+            # 402 body shape is the canonical addon-required envelope -
             # see oc-http::entitlements::build_402_body.
             addon_msg = (
                 body.get("msg")

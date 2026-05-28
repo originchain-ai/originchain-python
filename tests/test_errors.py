@@ -1,6 +1,6 @@
 """Error-mapping tests. Verify each HTTP status raises the right
 exception subclass with the expected metadata. 402 is the new branch
-introduced alongside the typed surfaces — assert the canonical
+introduced alongside the typed surfaces - assert the canonical
 addon-required body shape is unpacked onto attributes.
 """
 

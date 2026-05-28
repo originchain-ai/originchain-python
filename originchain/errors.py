@@ -3,14 +3,14 @@
 All OC errors derive from :class:`OCError` so callers can catch the base
 class. Specific subclasses let callers branch on retryability:
 
-- :class:`OCAuthError` (401 / 403) — DON'T retry, the bearer is wrong.
-- :class:`OCPaymentRequiredError` (402) — DON'T retry, an add-on is
+- :class:`OCAuthError` (401 / 403) - DON'T retry, the bearer is wrong.
+- :class:`OCPaymentRequiredError` (402) - DON'T retry, an add-on is
   required to call this endpoint.
-- :class:`OCNotFoundError` (404) — DON'T retry, the resource doesn't exist.
-- :class:`OCValidationError` (400) — DON'T retry, the request is malformed.
-- :class:`OCRateLimitedError` (429) — DO retry after ``Retry-After``.
-- :class:`OCServerError` (5xx) — MAY retry with backoff if idempotent.
-- :class:`OCReplicationDegraded` — write succeeded, but sync-replication
+- :class:`OCNotFoundError` (404) - DON'T retry, the resource doesn't exist.
+- :class:`OCValidationError` (400) - DON'T retry, the request is malformed.
+- :class:`OCRateLimitedError` (429) - DO retry after ``Retry-After``.
+- :class:`OCServerError` (5xx) - MAY retry with backoff if idempotent.
+- :class:`OCReplicationDegraded` - write succeeded, but sync-replication
   timed out. Set on the response, not raised. Callers can opt to log /
   page on this signal.
 """
@@ -91,5 +91,5 @@ class OCServerError(OCError):
 class OCReplicationDegraded(Warning):
     """The leader returned 200 but the follower didn't ack within the
     ``--sync-timeout-ms`` window. Surfaced as a warning rather than an
-    error because the write IS durable on the leader — a follower lag
+    error because the write IS durable on the leader - a follower lag
     or fence is the real cause and should be paged separately."""
