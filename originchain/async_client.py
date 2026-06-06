@@ -6,6 +6,13 @@ context-manager semantics. Duplication is the lesser evil; pyright
 catches drift.
 """
 
+# Same rationale as the sync client: httpx.Response.json() returns
+# `Any`, which `mypy --strict` flags at every `return await
+# resp.json()` even when the method's declared return type matches
+# what the engine actually emits. Disable the single check at file
+# scope.
+# mypy: disable-error-code="no-any-return"
+
 from __future__ import annotations
 
 import asyncio
@@ -373,7 +380,7 @@ class AsyncOriginChain:
         method: str,
         path: str,
         *,
-        params: Optional[dict] = None,
+        params: Optional[dict[str, Any]] = None,
         json: Any = None,
         content: Optional[bytes] = None,
         headers: Optional[dict[str, str]] = None,

@@ -1,6 +1,14 @@
 """Synchronous client. The async variant in :mod:`async_client` mirrors
 this surface exactly - keep both in sync when adding methods."""
 
+# httpx.Response.json() returns `Any`, which `mypy --strict` flags at
+# every `return resp.json()` even when the method's declared return
+# type is correct at runtime. Disable that single check at file
+# scope rather than litter every wire method with `# type: ignore`
+# pragmas — the runtime types ARE accurate; mypy just can't see
+# through the third-party Response type into the JSON body.
+# mypy: disable-error-code="no-any-return"
+
 from __future__ import annotations
 
 import json as _json
@@ -145,7 +153,7 @@ class _Rows:
         self,
         schema: str,
         rows: list[Mapping[str, Any]],
-        params: Optional[dict],
+        params: Optional[dict[str, Any]],
         base_idem: str,
         chunk_no: int,
     ) -> int:
@@ -488,7 +496,7 @@ class OriginChain:
         method: str,
         path: str,
         *,
-        params: Optional[dict] = None,
+        params: Optional[dict[str, Any]] = None,
         json: Any = None,
         content: Optional[bytes] = None,
         headers: Optional[dict[str, str]] = None,
