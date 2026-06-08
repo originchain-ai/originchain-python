@@ -168,6 +168,7 @@ class _Rows:
 
 
 from ._namespaces import (
+    _AdminNamespace,
     _FtsNamespace,
     _GraphNamespaceExtended,
     _SqlNamespace,
@@ -292,7 +293,7 @@ class OriginChain:
             http2=_HTTP2_AVAILABLE,
             headers={
                 "Authorization": f"Bearer {bearer}",
-                "User-Agent": user_agent or "originchain-python/0.4.0",
+                "User-Agent": user_agent or "originchain-python/0.5.0",
             },
         )
         self.schemas = _Schemas(self)
@@ -305,6 +306,11 @@ class OriginChain:
         self.sql = _SqlNamespace(self)
         self.vector = _VectorNamespace(self)
         self.fts = _FtsNamespace(self)
+        # 0.5: admin surface for the per-tenant replication-mode config
+        # routes that land under `/v1/admin/*` (not under `/v1/tenants/*`).
+        # Routes through the same `_request` helper; auth is whatever
+        # the parent client was constructed with.
+        self.admin = _AdminNamespace(self)
 
     @classmethod
     def from_env(cls, **kwargs: Any) -> "OriginChain":

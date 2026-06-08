@@ -277,7 +277,7 @@ class Path:
 
 @dataclass(frozen=True)
 class InstallCentroidsResult:
-    """``/vector/:table/install_centroids`` response. Echoes the number
+    """``/vector/:table/install-centroids`` response. Echoes the number
     of partitions installed and the vector dimensionality the server
     accepted, so callers can sanity-check against their corpus shape."""
 
@@ -291,6 +291,267 @@ class InstallCentroidsResult:
             installed=bool(payload.get("installed", True)),
             partitions=int(payload.get("partitions", 0)),
             dim=int(payload.get("dim", 0)),
+        )
+
+
+# ─────────────────── 0.5 additions (2026-06-08) ───────────────────
+# Wraps engine endpoints that landed after the 0.4.0 typed-namespace
+# batch (commit 6b2f0046). Each dataclass mirrors the wire shape from
+# the named handler in `backend/crates/oc-http/src/handlers/`; field
+# names match snake_case verbatim.
+
+
+@dataclass(frozen=True)
+class VectorDeleteResult:
+    """``DELETE /vector/:table/:vec_id`` response. The handler returns
+    ``{"deleted": true}`` on a real removal and ``{"deleted": false}``
+    on an idempotent missing-row no-op — never 404, so callers don't
+    have to swallow not-found in cleanup paths."""
+
+    deleted: bool
+
+    @classmethod
+    def _from_payload(cls, payload: Mapping[str, Any]) -> "VectorDeleteResult":
+        return cls(deleted=bool(payload.get("deleted", False)))
+
+
+@dataclass(frozen=True)
+class VectorDeleteBulkResult:
+    """``POST /vector/:table/delete-bulk`` response. ``deleted_count``
+    counts ids that were live before the call; ``missing_count`` counts
+    ids that were already absent. Sum may be less than ``len(ids)``
+    after dedup — the server collapses duplicate ids in one batch."""
+
+    deleted_count: int
+    missing_count: int
+
+    @classmethod
+    def _from_payload(cls, payload: Mapping[str, Any]) -> "VectorDeleteBulkResult":
+        return cls(
+            deleted_count=int(payload.get("deleted_count", 0)),
+            missing_count=int(payload.get("missing_count", 0)),
+        )
+
+
+@dataclass(frozen=True)
+class IvfRebalanceStatus:
+    """``GET /vector/:table/ivf-rebalance-status`` response. ``action``
+    is one of ``"none" | "recommended" | "required"``; nothing is
+    auto-triggered server-side — the operator reads this and decides
+    whether to call ``train_and_install_centroids`` again."""
+
+    total_live: int
+    partitions: int
+    live_per_cell: list[int]
+    skew: float
+    action: str
+
+    @classmethod
+    def _from_payload(cls, payload: Mapping[str, Any]) -> "IvfRebalanceStatus":
+        raw_action = payload.get("action", "none")
+        # Server emits the action as a serde-tagged string ("None" /
+        # "Recommended" / "Required" or the snake_case equivalent
+        # depending on the serde-rename in oc_vector::RebalanceAction).
+        # Normalise to lowercase snake_case so SDK callers see a single
+        # vocabulary regardless of the server's serde-attr choices.
+        action_str = str(raw_action).lower()
+        return cls(
+            total_live=int(payload.get("total_live", 0)),
+            partitions=int(payload.get("partitions", 0)),
+            live_per_cell=[int(c) for c in payload.get("live_per_cell", [])],
+            skew=float(payload.get("skew", 0.0)),
+            action=action_str,
+        )
+
+
+@dataclass(frozen=True)
+class TrainAndInstallCentroidsResult:
+    """``POST /vector/:table/train-and-install-centroids`` response.
+    Carries both training diagnostics (``iterations`` / ``converged``
+    / ``last_max_shift`` / ``training_corpus_size``) and the install
+    outcome (``installed`` / ``partitions`` / ``dim``)."""
+
+    trained: bool
+    installed: bool
+    partitions: int
+    dim: int
+    iterations: int
+    converged: bool
+    last_max_shift: float
+    training_corpus_size: int
+
+    @classmethod
+    def _from_payload(
+        cls, payload: Mapping[str, Any]
+    ) -> "TrainAndInstallCentroidsResult":
+        return cls(
+            trained=bool(payload.get("trained", False)),
+            installed=bool(payload.get("installed", False)),
+            partitions=int(payload.get("partitions", 0)),
+            dim=int(payload.get("dim", 0)),
+            iterations=int(payload.get("iterations", 0)),
+            converged=bool(payload.get("converged", False)),
+            last_max_shift=float(payload.get("last_max_shift", 0.0)),
+            training_corpus_size=int(payload.get("training_corpus_size", 0)),
+        )
+
+
+@dataclass(frozen=True)
+class CentroidsPreview:
+    """``GET /vector/:table/centroids`` response. ``installed=False``
+    when no centroids have been installed yet; ``centroids_preview`` is
+    a truncated peek (server-side cap is 4 centroids × first 8 dims)
+    so the response stays cheap even at production dimensionality."""
+
+    installed: bool
+    partitions: int
+    dim: int
+    centroids_preview: list[list[float]]
+
+    @classmethod
+    def _from_payload(cls, payload: Mapping[str, Any]) -> "CentroidsPreview":
+        raw_preview = payload.get("centroids_preview", [])
+        preview: list[list[float]] = [
+            [float(x) for x in row] for row in raw_preview
+        ]
+        return cls(
+            installed=bool(payload.get("installed", False)),
+            partitions=int(payload.get("partitions", 0)),
+            dim=int(payload.get("dim", 0)),
+            centroids_preview=preview,
+        )
+
+
+@dataclass(frozen=True)
+class GraphEmbeddingHit:
+    """One ``(pk, score)`` row from the persisted-embedding topk
+    endpoints (``/graph/:schema/node2vec/:rel/topk`` and the GraphSAGE
+    sibling). Score semantics follow the metric: cosine/dot are
+    higher-is-closer; l2/manhattan are lower-is-closer."""
+
+    pk: str
+    score: float
+
+    @classmethod
+    def _from_payload(cls, payload: Mapping[str, Any]) -> "GraphEmbeddingHit":
+        return cls(pk=str(payload["pk"]), score=float(payload["score"]))
+
+
+@dataclass(frozen=True)
+class GraphSageResult:
+    """``POST /graph/:schema/graphsage`` response. ``embeddings`` is the
+    ``{pk_label: [..f32..]}`` map the server returned (decoded via the
+    same ``decode_pk_label`` path every graph endpoint uses).
+    ``persisted`` mirrors the request's ``persist`` flag — when ``True``
+    the sibling ``/graphsage/:rel/topk`` endpoint becomes callable."""
+
+    embeddings: dict[str, list[float]]
+    vocab_size: int
+    training_pairs: int
+    final_loss: float
+    embedding_dim: int
+    feature_dim: int
+    persisted: bool
+
+    @classmethod
+    def _from_payload(cls, payload: Mapping[str, Any]) -> "GraphSageResult":
+        raw_emb = payload.get("embeddings", {})
+        emb: dict[str, list[float]] = {
+            str(k): [float(x) for x in v] for k, v in raw_emb.items()
+        }
+        return cls(
+            embeddings=emb,
+            vocab_size=int(payload.get("vocab_size", 0)),
+            training_pairs=int(payload.get("training_pairs", 0)),
+            final_loss=float(payload.get("final_loss", 0.0)),
+            embedding_dim=int(payload.get("embedding_dim", 0)),
+            feature_dim=int(payload.get("feature_dim", 0)),
+            persisted=bool(payload.get("persisted", False)),
+        )
+
+
+@dataclass(frozen=True)
+class MaterializedViewInstallResult:
+    """``POST /sql/materialized-views`` response. ``rows_materialized``
+    and ``bytes_written`` describe the snapshot the executor just
+    stamped; ``refresh_ts`` is the server-side unix-epoch second at
+    which the snapshot was taken."""
+
+    name: str
+    rows_materialized: int
+    bytes_written: int
+    refresh_ts: int
+
+    @classmethod
+    def _from_payload(
+        cls, payload: Mapping[str, Any]
+    ) -> "MaterializedViewInstallResult":
+        return cls(
+            name=str(payload.get("name", "")),
+            rows_materialized=int(payload.get("rows_materialized", 0)),
+            bytes_written=int(payload.get("bytes_written", 0)),
+            refresh_ts=int(payload.get("refresh_ts", 0)),
+        )
+
+
+@dataclass(frozen=True)
+class MaterializedViewRefreshResult:
+    """``POST /sql/materialized-views/:name/refresh`` response. Same
+    shape as :class:`MaterializedViewInstallResult` — every refresh
+    atomically overwrites the prior snapshot."""
+
+    name: str
+    rows_materialized: int
+    bytes_written: int
+    refresh_ts: int
+
+    @classmethod
+    def _from_payload(
+        cls, payload: Mapping[str, Any]
+    ) -> "MaterializedViewRefreshResult":
+        return cls(
+            name=str(payload.get("name", "")),
+            rows_materialized=int(payload.get("rows_materialized", 0)),
+            bytes_written=int(payload.get("bytes_written", 0)),
+            refresh_ts=int(payload.get("refresh_ts", 0)),
+        )
+
+
+@dataclass(frozen=True)
+class MaterializedViewRows:
+    """``GET /sql/materialized-views/:name`` response. ``rows`` carries
+    the rmp-decoded row bundle the executor stamped at the last
+    refresh; the shape is whatever the original SELECT projected."""
+
+    name: str
+    rows: list[Any]
+
+    @classmethod
+    def _from_payload(cls, payload: Mapping[str, Any]) -> "MaterializedViewRows":
+        rows = payload.get("rows", [])
+        return cls(
+            name=str(payload.get("name", "")),
+            rows=list(rows),
+        )
+
+
+@dataclass(frozen=True)
+class TenantConfigSnapshot:
+    """``GET / POST /v1/admin/tenants/:tenant/config`` response.
+    ``replication_mode`` is one of ``"active_passive"`` (today's default,
+    direct-WAL writes) or ``"raft_quorum"`` (Phase D consensus path).
+    ``installed`` is ``True`` on the install response and ``None`` on
+    the read response — the same shape serves both endpoints."""
+
+    replication_mode: str
+    installed: Optional[bool] = None
+
+    @classmethod
+    def _from_payload(cls, payload: Mapping[str, Any]) -> "TenantConfigSnapshot":
+        inst = payload.get("installed")
+        return cls(
+            replication_mode=str(payload.get("replication_mode", "active_passive")),
+            installed=None if inst is None else bool(inst),
         )
 
 
@@ -340,4 +601,16 @@ __all__ = [
     "DijkstraResult",
     "Path",
     "InstallCentroidsResult",
+    # 0.5 additions
+    "VectorDeleteResult",
+    "VectorDeleteBulkResult",
+    "IvfRebalanceStatus",
+    "TrainAndInstallCentroidsResult",
+    "CentroidsPreview",
+    "GraphEmbeddingHit",
+    "GraphSageResult",
+    "MaterializedViewInstallResult",
+    "MaterializedViewRefreshResult",
+    "MaterializedViewRows",
+    "TenantConfigSnapshot",
 ]
