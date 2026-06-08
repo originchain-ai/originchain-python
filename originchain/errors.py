@@ -93,3 +93,16 @@ class OCReplicationDegraded(Warning):
     ``--sync-timeout-ms`` window. Surfaced as a warning rather than an
     error because the write IS durable on the leader - a follower lag
     or fence is the real cause and should be paged separately."""
+
+
+# ── Spec-style aliases ────────────────────────────────────────────────
+# The typed-namespace surface (``client.sql.query`` / ``client.vector.*``
+# / etc.) documents 4xx errors as ``OriginChainBadRequest`` and 5xx as
+# ``OriginChainServerError``. Map both to the existing typed classes so
+# `except OriginChainBadRequest` works the same way callers expect from
+# the spec, AND `except OCValidationError` keeps working for legacy
+# call-sites. Aliases (not subclasses) so `isinstance` checks against
+# either name behave identically.
+
+OriginChainBadRequest = OCValidationError
+OriginChainServerError = OCServerError

@@ -167,10 +167,22 @@ class _Rows:
         return resp.json().get("inserted", 0)
 
 
-class _Graph:
+from ._namespaces import (
+    _FtsNamespace,
+    _GraphNamespaceExtended,
+    _SqlNamespace,
+    _VectorNamespace,
+)
+
+
+class _Graph(_GraphNamespaceExtended):
     """``db.graph.*`` namespace. Wraps the five graph endpoints under
-    ``/v1/tenants/:t/graph/:schema/{neighbors,reverse,bfs,path,dijkstra}``.
-    Each method returns a typed dataclass instead of raw dicts."""
+    ``/v1/tenants/:t/graph/:schema/{neighbors,reverse,bfs,path,dijkstra}``
+    plus the typed-namespace v1 extensions (``k_shortest`` /
+    ``random_walk`` / ``louvain`` / ``pagerank`` / ``label_propagation``
+    / ``betweenness`` / ``shortest_path``) mixed in from
+    :class:`_GraphNamespaceExtended`. Each method returns a typed
+    dataclass / dict / list instead of raw JSON."""
 
     def __init__(self, parent: "OriginChain") -> None:
         self._p = parent
@@ -286,6 +298,13 @@ class OriginChain:
         self.schemas = _Schemas(self)
         self.rows = _Rows(self)
         self.graph = _Graph(self)
+        # Typed-namespace v1 surfaces. `self.sql` is a callable
+        # namespace so `client.sql("...")` (legacy) AND
+        # `client.sql.query("...")` / `client.sql.execute("...")`
+        # both work off the same attribute.
+        self.sql = _SqlNamespace(self)
+        self.vector = _VectorNamespace(self)
+        self.fts = _FtsNamespace(self)
 
     @classmethod
     def from_env(cls, **kwargs: Any) -> "OriginChain":
@@ -323,8 +342,14 @@ class OriginChain:
 
     # ── SQL ───────────────────────────────────────────────────────────
 
-    def sql(self, query: str) -> SqlResponse:
-        """Execute a SQL statement against the substrate.
+    def _sql_callable_impl(self, query: str) -> SqlResponse:
+        """Implementation backing the legacy ``client.sql("...")`` callable.
+
+        Lives on the client (not on the namespace) because the typed
+        ``client.sql`` attribute is now a :class:`_SqlNamespace`
+        instance; the namespace's ``__call__`` delegates here so the
+        pre-namespace API (``client.sql("...")`` returning a
+        :class:`SqlResponse`) keeps its exact shape.
 
         Returns a tagged-union dataclass discriminated on ``kind``:
 
@@ -335,9 +360,7 @@ class OriginChain:
           for ``/rows/:schema/:pk``.
 
         See ``backend/crates/oc-http/src/preview_endpoints.rs::sql_exec``
-        for the full contract. The split exists because writes from
-        ``/sql`` need the idempotency-key plumbing the typed row
-        endpoints already have."""
+        for the full contract."""
         body = self._request(
             "POST",
             f"/v1/tenants/{self.tenant}/sql",
@@ -350,7 +373,7 @@ class OriginChain:
         ``None`` if no rows). Raises :class:`OCValidationError` if the
         statement isn't a SELECT - there's no "first" of an INSERT or
         DELETE translation."""
-        resp = self.sql(query)
+        resp = self._sql_callable_impl(query)
         if not isinstance(resp, SqlSelect):
             raise OCValidationError(
                 f"sql_one expected SELECT, got {type(resp).__name__}"

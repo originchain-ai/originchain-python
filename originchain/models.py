@@ -165,15 +165,179 @@ class DijkstraResult:
     cost: Optional[float]
 
 
+# ─────────────────────────── Typed-namespace v1 shapes ───────────────────────
+# Added 2026-06-07 alongside the `client.sql` / `client.vector` /
+# `client.fts` / `client.graph` typed namespace surface. The legacy
+# dataclasses above are kept verbatim so existing call-sites
+# (`client.sql(...)`, `client.vector_topk(...)`, `client.graph.bfs(...)`)
+# don't break — these new shapes wrap richer responses (rows + columns
+# for SQL, hits + facets for FTS, nodes + cost for paths) that the
+# legacy methods didn't surface.
+
+
+@dataclass(frozen=True)
+class SqlResult:
+    """SELECT-shape response with both rows and an optional column list.
+
+    ``rows`` is the raw row list as returned by the substrate. ``columns``
+    is the projection order when the server emits it (the preview
+    ``/sql`` endpoint does not always include a separate columns array;
+    when absent, fall back to ``list(row.keys())`` on the first row)."""
+
+    rows: list[dict[str, Any]]
+    columns: Optional[list[str]] = None
+
+
+@dataclass(frozen=True)
+class SqlExecResult:
+    """Non-SELECT-shape response. ``rows_affected`` is best-effort — the
+    preview ``/sql`` endpoint translates writes into typed row payloads
+    rather than executing them inline, so for INSERT/DELETE the SDK
+    re-issues against the typed row routes and surfaces the count the
+    substrate confirms. ``kind`` echoes the wire discriminator."""
+
+    kind: str
+    rows_affected: int = 0
+    schema: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class FacetBucket:
+    """One bucket in a facet aggregation. Wire shape: ``{"value": "...",
+    "count": N}``. Mirrors ``oc_fulltext::FacetBucket`` directly."""
+
+    value: str
+    count: int
+
+    @classmethod
+    def _from_payload(cls, payload: Mapping[str, Any]) -> "FacetBucket":
+        return cls(value=str(payload["value"]), count=int(payload["count"]))
+
+
+@dataclass(frozen=True)
+class FtsHitWithHighlights:
+    """One BM25 hit with optional per-field highlight snippets. Boolean /
+    phrase modes produce this dataclass too with ``score=0.0`` and no
+    highlights so the typed-namespace shape stays uniform.
+
+    Distinct from the legacy :class:`FtsHit` (which doesn't carry
+    highlights) so callers can keep importing the simpler shape from
+    pre-typed-namespace code without picking up a wider interface."""
+
+    doc_id: str
+    score: float
+    highlights: Optional[dict[str, list[str]]] = None
+
+    @classmethod
+    def _from_ranked(cls, payload: Mapping[str, Any]) -> "FtsHitWithHighlights":
+        return cls(doc_id=str(payload["doc_id"]), score=float(payload["score"]))
+
+    @classmethod
+    def _from_enriched(cls, payload: Mapping[str, Any]) -> "FtsHitWithHighlights":
+        hl_raw = payload.get("highlights") or {}
+        hl: Optional[dict[str, list[str]]] = (
+            {str(k): [str(s) for s in v] for k, v in hl_raw.items()} if hl_raw else None
+        )
+        return cls(
+            doc_id=str(payload["doc_id"]),
+            score=float(payload["score"]),
+            highlights=hl,
+        )
+
+    @classmethod
+    def _from_doc_id(cls, doc_id: str) -> "FtsHitWithHighlights":
+        return cls(doc_id=doc_id, score=0.0, highlights=None)
+
+
+@dataclass(frozen=True)
+class FtsResult:
+    """Container for the BM25 / boolean / phrase response. ``hits`` is
+    always populated; ``facets`` is populated only when the caller
+    passed ``facets=[...]`` and the server returned the enriched
+    envelope (``{hits: [...], facets: {field: [...]}}``)."""
+
+    hits: list[FtsHitWithHighlights]
+    facets: Optional[dict[str, list[FacetBucket]]] = None
+
+
+@dataclass(frozen=True)
+class Path:
+    """One ranked graph path. ``nodes`` is the decoded PK label list,
+    source first; ``cost`` is the sum of edge weights along the path
+    (defaults to hop count when the relation has no weight column)."""
+
+    nodes: list[str]
+    cost: float
+
+    @classmethod
+    def _from_payload(cls, payload: Mapping[str, Any]) -> "Path":
+        nodes = [str(n) for n in payload.get("nodes", [])]
+        return cls(nodes=nodes, cost=float(payload.get("cost", 0.0)))
+
+
+@dataclass(frozen=True)
+class InstallCentroidsResult:
+    """``/vector/:table/install_centroids`` response. Echoes the number
+    of partitions installed and the vector dimensionality the server
+    accepted, so callers can sanity-check against their corpus shape."""
+
+    installed: bool
+    partitions: int
+    dim: int
+
+    @classmethod
+    def _from_payload(cls, payload: Mapping[str, Any]) -> "InstallCentroidsResult":
+        return cls(
+            installed=bool(payload.get("installed", True)),
+            partitions=int(payload.get("partitions", 0)),
+            dim=int(payload.get("dim", 0)),
+        )
+
+
+@dataclass(frozen=True)
+class VectorHitV2:
+    """Typed-namespace VectorHit. Distinct from the legacy
+    :class:`VectorHit` because it also surfaces server-returned
+    metadata (cosine-similar callers often want the original tag /
+    source URL alongside the score). ``vec_id`` mirrors the spec field
+    name; ``id`` is exposed as a property alias for legacy code."""
+
+    vec_id: str
+    score: float
+    metadata: Optional[dict[str, Any]] = None
+
+    @property
+    def id(self) -> str:
+        return self.vec_id
+
+    @classmethod
+    def _from_payload(cls, payload: Mapping[str, Any]) -> "VectorHitV2":
+        md_raw = payload.get("metadata")
+        md: Optional[dict[str, Any]] = dict(md_raw) if isinstance(md_raw, dict) else None
+        return cls(
+            vec_id=str(payload.get("id") or payload.get("vec_id")),
+            score=float(payload["score"]),
+            metadata=md,
+        )
+
+
 __all__ = [
     "SqlSelect",
     "SqlInsert",
     "SqlDelete",
     "SqlResponse",
+    "SqlResult",
+    "SqlExecResult",
     "VectorHit",
+    "VectorHitV2",
     "FtsHit",
+    "FtsHitWithHighlights",
+    "FtsResult",
+    "FacetBucket",
     "Neighbor",
     "GraphBfsHit",
     "GraphPath",
     "DijkstraResult",
+    "Path",
+    "InstallCentroidsResult",
 ]

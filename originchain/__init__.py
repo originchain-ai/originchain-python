@@ -36,18 +36,28 @@ from .errors import (
     OCReplicationDegraded,
     OCServerError,
     OCValidationError,
+    OriginChainBadRequest,
+    OriginChainServerError,
 )
 from .models import (
     DijkstraResult,
+    FacetBucket,
     FtsHit,
+    FtsHitWithHighlights,
+    FtsResult,
     GraphBfsHit,
     GraphPath,
+    InstallCentroidsResult,
     Neighbor,
+    Path,
     SqlDelete,
+    SqlExecResult,
     SqlInsert,
     SqlResponse,
+    SqlResult,
     SqlSelect,
     VectorHit,
+    VectorHitV2,
 )
 
 __all__ = [
@@ -62,17 +72,27 @@ __all__ = [
     "OCServerError",
     "OCValidationError",
     "OCReplicationDegraded",
+    "OriginChainBadRequest",
+    "OriginChainServerError",
     # Models
     "SqlSelect",
     "SqlInsert",
     "SqlDelete",
     "SqlResponse",
+    "SqlResult",
+    "SqlExecResult",
     "VectorHit",
+    "VectorHitV2",
     "FtsHit",
+    "FtsHitWithHighlights",
+    "FtsResult",
+    "FacetBucket",
     "Neighbor",
     "GraphBfsHit",
     "GraphPath",
     "DijkstraResult",
+    "Path",
+    "InstallCentroidsResult",
 ]
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
