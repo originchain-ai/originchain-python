@@ -53,40 +53,101 @@ asyncio.run(main())
 ## SQL
 
 ```python
-resp = db.sql("SELECT order_id, qty FROM trading.orders WHERE symbol = 'AAPL'")
-for row in resp.rows:
+# Typed surface (recommended):
+result = db.sql.query(
+    "SELECT order_id, qty FROM trading.orders WHERE symbol = :s",
+    params={"s": "AAPL"},
+)
+for row in result.rows:
     print(row["order_id"], row["qty"])
+print(result.columns)  # ["order_id", "qty"]
+
+# Non-SELECT statements come back as a translation envelope:
+exec_result = db.sql.execute("INSERT INTO trading.orders ...")
+print(exec_result.kind, exec_result.rows_affected)
 ```
 
-`db.sql_one("SELECT ... LIMIT 1")` returns the first row dict (or `None`).
+The legacy callable `db.sql("SELECT ...")` still works and returns the
+tagged-union dataclass. `db.sql_one("SELECT ... LIMIT 1")` returns the
+first row dict (or `None`).
 
 ## Vector
 
 ```python
-db.vector_put("embeddings", id="doc-1", embedding=[0.1, 0.2, 0.3], dim=3)
-hits = db.vector_topk("embeddings", query=[0.1, 0.2, 0.3], k=5, dim=3)
+# Typed surface (recommended): `dim` is derived from the vector length.
+db.vector.put("embeddings", "doc-1", [0.1, 0.2, 0.3], metadata={"src": "wiki"})
+hits = db.vector.topk(
+    "embeddings",
+    [0.1, 0.2, 0.3],
+    k=5,
+    metric="cosine",
+    filter={"src": "wiki"},   # optional metadata filter
+    nprobe=8,                  # optional IVF tuning knob
+)
 for h in hits:
-    print(h.id, h.score)
+    print(h.vec_id, h.score, h.metadata)
+
+db.vector.delete("embeddings", "doc-1")
+
+# Pre-install IVF centroids for cold-start tables:
+res = db.vector.install_centroids("embeddings", centroids=[[...], [...]])
+print(res.installed, res.partitions, res.dim)
 ```
+
+The legacy `db.vector_put(...)` / `db.vector_topk(...)` methods stay
+available for code written before the typed namespace landed.
 
 ## Full-text
 
 ```python
-db.fts_index("articles", "body", doc_id="d1", text="the quick brown fox")
-hits = db.fts_search("articles", "body", q="quick fox", mode="bm25", k=5)
-print([(h.doc_id, h.score) for h in hits])
+db.fts.index("articles", "body", "d1", "the quick brown fox")
+
+# BM25 with highlight snippets + facet aggregation.
+result = db.fts.search(
+    "articles",
+    "body",
+    "quick fox",
+    mode="bm25",
+    fuzzy=1,
+    highlight=True,
+    facets=["color", "brand"],
+)
+for h in result.hits:
+    print(h.doc_id, h.score, h.highlights)
+print(result.facets)  # {"color": [FacetBucket(value="red", count=3), ...]}
+
+# Per-(table, field) admin:
+db.fts.install_synonyms("articles", "body", {"car": ["auto", "vehicle"]})
+db.fts.install_stopwords("articles", "body", ["the", "a", "an"])
 ```
+
+`db.fts_index(...)` / `db.fts_search(...)` remain for back-compat.
 
 ## Graph
 
 ```python
-nbrs = db.graph.neighbors("users", rel="follows", pk="u1")
-for n in nbrs:
-    print(n.pk)
-result = db.graph.dijkstra("users", rel="follows", src="u1", dst="u9",
-                           weights={"u1|u2": 1.0, "u2|u9": 0.5})
-print(result.cost)
+# Single-hop neighbours + BFS:
+nbrs   = db.graph.neighbors_of("users", "u1", "follows")
+bfs    = db.graph.bfs_of("users", "u1", "follows", max_depth=3)
+
+# Shortest path + Yen's K-shortest:
+path   = db.graph.shortest_path("users", "u1", "u9", "follows")
+ranked = db.graph.k_shortest("users", "u1", "u9", "follows", k=5,
+                             weight_col="edge_weight")
+
+# Random walk (uniform; p/q != 1 routes through Node2Vec-biased):
+walk = db.graph.random_walk("users", "u1", "follows", steps=10, seed=42)
+
+# Community detection + centrality:
+communities = db.graph.louvain("users", "follows")
+labels      = db.graph.label_propagation("users", "follows", seed=1)
+ranks       = db.graph.pagerank("users", "follows", nodes=["u1", "u2", "u3"])
+between     = db.graph.betweenness("users", "follows")
 ```
+
+The legacy kwarg-style helpers (`db.graph.neighbors(...)`,
+`db.graph.bfs(...)`, `db.graph.path(...)`, `db.graph.dijkstra(...)`,
+`db.graph.reverse_neighbors(...)`) stay available.
 
 ## Auth
 
@@ -104,6 +165,8 @@ from originchain import (
     OCPaymentRequiredError,
     OCRateLimitedError,
     OCServerError,
+    OriginChainBadRequest,   # alias of OCValidationError (4xx)
+    OriginChainServerError,  # alias of OCServerError    (5xx)
 )
 
 try:
@@ -113,6 +176,8 @@ except OCRateLimitedError as e:
     db.rows.put("trading.orders", row)
 except OCPaymentRequiredError as e:
     print(f"enable {e.name} at {e.purchase_url}")
+except OriginChainBadRequest:
+    print("bad request — fix it before retrying")
 except OCAuthError:
     print("rotate your bearer in the console")
 ```
