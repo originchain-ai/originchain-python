@@ -188,6 +188,89 @@ within the configured timeout, the client emits an
 the warning surfaces a follower-lag signal callers can monitor or page
 on.
 
+## What's new in 0.5
+
+0.5.0 wires up the engine endpoints that shipped after the
+typed-namespace batch (`0.4.0`). All new methods are additive — no
+breaking changes — and require an engine deployed at commit
+`2c1fe55a` or later.
+
+### Vector: bulk delete + IVF lifecycle
+
+```python
+# Single delete: now actually works end-to-end. 0.4 was wire-ready but
+# the Rust handler hadn't shipped; missing-row returns deleted=False
+# (200), not 404, so cleanup loops never need try/except.
+result = db.vector.delete("embeddings", "doc-1")
+print(result.deleted)
+
+# Bulk delete (up to 10 000 ids per call, one WAL frame):
+result = db.vector.delete_bulk("embeddings", ["doc-1", "doc-2", "doc-3"])
+print(result.deleted_count, result.missing_count)
+
+# IVF centroid lifecycle — bootstrap an IVF table after a row of writes:
+db.vector.train_and_install_centroids("embeddings", partitions=64, seed=42)
+preview  = db.vector.centroids("embeddings")           # installed? sample?
+status   = db.vector.rebalance_status("embeddings")    # skew + action hint
+```
+
+### Graph: Node2Vec topk + GraphSAGE
+
+```python
+# Top-k similar nodes against persisted Node2Vec embeddings:
+hits = db.graph.node2vec_topk("users", "follows", "u1", k=10)
+
+# GraphSAGE attribute-aware embeddings (train + optionally persist):
+res = db.graph.graphsage(
+    "users",
+    feature_col="profile_vec",
+    rel="follows",
+    config={"embedding_dim": 128, "epochs": 5, "seed": 42},
+    persist=True,
+)
+print(res.vocab_size, res.final_loss, res.persisted)
+
+# Persisted-embedding similarity (same shape as node2vec_topk):
+hits = db.graph.graphsage_topk("users", "follows", "u1", k=10)
+```
+
+### SQL: materialized views
+
+```python
+res = db.sql.install_materialized_view(
+    "daily_orders",
+    "SELECT order_id, qty FROM trading.orders",
+    refresh_mode="manual",
+)
+print(res.rows_materialized, res.bytes_written, res.refresh_ts)
+
+# On-demand refresh — atomically overwrites the snapshot:
+db.sql.refresh_materialized_view("daily_orders")
+
+# Snapshot read:
+view = db.sql.read_materialized_view("daily_orders")
+for row in view.rows:
+    print(row)
+```
+
+### Admin: per-tenant replication config
+
+```python
+# Install / change the replication topology for one tenant:
+db.admin.install_tenant_config(tenant_id, replication_mode="raft_quorum")
+
+# Read the installed mode (returns active_passive when none installed):
+cfg = db.admin.get_tenant_config(tenant_id)
+print(cfg.replication_mode, cfg.installed)
+```
+
+### FTS lemmatization
+
+No SDK API change — `db.fts.install_synonyms(...)` /
+`install_stopwords(...)` are unchanged. Server-side, the analyzer now
+applies dictionary-based lemmatization across 9 languages when the
+table's analyzer config selects `lemmatizer="dictionary"`.
+
 ## Versioning
 
 This client follows semver. The `0.x` line is for design partners;

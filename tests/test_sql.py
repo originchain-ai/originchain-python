@@ -197,6 +197,155 @@ def test_sql_execute_error_400(mock_client) -> None:
         client.sql.execute("nonsense")
 
 
+# ─────────────────────── 0.5 additions (2026-06-08) ───────────────────────
+# Materialized views: install / refresh / read.
+
+
+from originchain import (
+    MaterializedViewInstallResult,
+    MaterializedViewRefreshResult,
+    MaterializedViewRows,
+)
+
+
+def test_sql_install_materialized_view(mock_client) -> None:
+    seen: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        assert req.method == "POST"
+        assert req.url.path.endswith("/sql/materialized-views")
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(
+            200,
+            json={
+                "name": "daily_orders",
+                "rows_materialized": 4321,
+                "bytes_written": 819200,
+                "refresh_ts": 1717804800,
+            },
+        )
+
+    client = mock_client(handler)
+    out = client.sql.install_materialized_view(
+        "daily_orders",
+        "SELECT order_id, qty FROM trading.orders",
+        refresh_mode="manual",
+    )
+    assert isinstance(out, MaterializedViewInstallResult)
+    assert out.name == "daily_orders"
+    assert out.rows_materialized == 4321
+    assert out.bytes_written == 819200
+    assert out.refresh_ts == 1717804800
+    assert seen["body"]["name"] == "daily_orders"
+    assert seen["body"]["query"].startswith("SELECT")
+    assert seen["body"]["refresh_mode"] == "manual"
+    # `source_schema` is omitted from the body when caller doesn't
+    # supply it — server derives it from the plan.
+    assert "source_schema" not in seen["body"]
+
+
+def test_sql_install_materialized_view_with_source_schema(mock_client) -> None:
+    seen: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(
+            200,
+            json={
+                "name": "v1",
+                "rows_materialized": 0,
+                "bytes_written": 0,
+                "refresh_ts": 1717804800,
+            },
+        )
+
+    client = mock_client(handler)
+    client.sql.install_materialized_view(
+        "v1",
+        "SELECT * FROM trading.orders",
+        source_schema="trading.orders",
+    )
+    assert seen["body"]["source_schema"] == "trading.orders"
+
+
+def test_sql_install_materialized_view_error_400(mock_client) -> None:
+    client = mock_client(
+        lambda req: httpx.Response(
+            400, json={"error": "materialized view query: parse error"}
+        )
+    )
+    with pytest.raises(OriginChainBadRequest):
+        client.sql.install_materialized_view("bad", "NOT SQL")
+
+
+def test_sql_refresh_materialized_view(mock_client) -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        assert req.method == "POST"
+        assert req.url.path.endswith(
+            "/sql/materialized-views/daily_orders/refresh"
+        )
+        return httpx.Response(
+            200,
+            json={
+                "name": "daily_orders",
+                "rows_materialized": 4500,
+                "bytes_written": 856000,
+                "refresh_ts": 1717891200,
+            },
+        )
+
+    client = mock_client(handler)
+    out = client.sql.refresh_materialized_view("daily_orders")
+    assert isinstance(out, MaterializedViewRefreshResult)
+    assert out.name == "daily_orders"
+    assert out.rows_materialized == 4500
+
+
+def test_sql_refresh_materialized_view_not_found(mock_client) -> None:
+    # 404 when the view isn't installed. Surfaces as OCNotFoundError;
+    # the test just verifies a 4xx-class error propagates.
+    from originchain import OCNotFoundError
+
+    client = mock_client(
+        lambda req: httpx.Response(
+            404, json={"error": "materialized view not found"}
+        )
+    )
+    with pytest.raises(OCNotFoundError):
+        client.sql.refresh_materialized_view("missing")
+
+
+def test_sql_read_materialized_view(mock_client) -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        assert req.method == "GET"
+        assert req.url.path.endswith("/sql/materialized-views/daily_orders")
+        return httpx.Response(
+            200,
+            json={
+                "name": "daily_orders",
+                "rows": [
+                    {"order_id": "o1", "qty": 100},
+                    {"order_id": "o2", "qty": 200},
+                ],
+            },
+        )
+
+    client = mock_client(handler)
+    out = client.sql.read_materialized_view("daily_orders")
+    assert isinstance(out, MaterializedViewRows)
+    assert out.name == "daily_orders"
+    assert len(out.rows) == 2
+    assert out.rows[0] == {"order_id": "o1", "qty": 100}
+
+
+def test_sql_read_materialized_view_error_500(mock_client) -> None:
+    client = mock_client(
+        lambda req: httpx.Response(500, json={"error": "snapshot decode failed"})
+    )
+    with pytest.raises(OriginChainServerError):
+        client.sql.read_materialized_view("daily_orders")
+
+
 def test_sql_callable_back_compat(mock_client) -> None:
     # The pre-namespace API: `client.sql("SELECT ...")` returning the
     # tagged-union dataclass. Must keep working after `client.sql`

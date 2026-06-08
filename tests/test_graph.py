@@ -371,3 +371,221 @@ def test_graph_ns_bfs_of_error_400(mock_client) -> None:
     client = mock_client(lambda req: httpx.Response(400, json={"error": "no rel"}))
     with pytest.raises(OriginChainBadRequest):
         client.graph.bfs_of("users", "u1", "no-such-rel")
+
+
+# ─────────────────────── 0.5 additions (2026-06-08) ───────────────────────
+# Node2Vec topk over persisted embeddings; GraphSAGE train + topk.
+
+
+from originchain import GraphEmbeddingHit, GraphSageResult
+
+
+def test_graph_node2vec_topk(mock_client) -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        assert req.method == "GET"
+        assert req.url.path.endswith("/graph/users/node2vec/follows/topk")
+        assert req.url.params["query"] == "u1"
+        assert req.url.params["k"] == "5"
+        assert req.url.params["metric"] == "cosine"
+        return httpx.Response(
+            200,
+            json=[
+                {"pk": "u2", "score": 0.95},
+                {"pk": "u3", "score": 0.82},
+            ],
+        )
+
+    client = mock_client(handler)
+    out = client.graph.node2vec_topk("users", "follows", "u1", k=5)
+    assert out == [
+        GraphEmbeddingHit(pk="u2", score=0.95),
+        GraphEmbeddingHit(pk="u3", score=0.82),
+    ]
+
+
+def test_graph_node2vec_topk_metric_dot(mock_client) -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        assert req.url.params["metric"] == "dot"
+        return httpx.Response(200, json=[])
+
+    client = mock_client(handler)
+    out = client.graph.node2vec_topk("users", "follows", "u1", k=10, metric="dot")
+    assert out == []
+
+
+def test_graph_node2vec_topk_503_not_persisted(mock_client) -> None:
+    # 503 when no Node2Vec embeddings have been persisted yet —
+    # surfaces as OCServerError (caller's signal to POST with
+    # persist=true first).
+    client = mock_client(
+        lambda req: httpx.Response(
+            503,
+            json={
+                "error": "node2vec_embeddings_not_persisted",
+                "hint": "POST with persist=true first",
+            },
+        )
+    )
+    with pytest.raises(OriginChainServerError):
+        client.graph.node2vec_topk("users", "follows", "u1", k=5)
+
+
+def test_graph_graphsage_train(mock_client) -> None:
+    seen: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        assert req.method == "POST"
+        assert req.url.path.endswith("/graph/users/graphsage")
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(
+            200,
+            json={
+                "embeddings": {
+                    "u1": [0.1, 0.2, 0.3],
+                    "u2": [0.4, 0.5, 0.6],
+                },
+                "vocab_size": 2,
+                "training_pairs": 100,
+                "final_loss": 0.42,
+                "embedding_dim": 3,
+                "feature_dim": 4,
+                "persisted": False,
+            },
+        )
+
+    client = mock_client(handler)
+    out = client.graph.graphsage(
+        "users",
+        feature_col="features",
+        rel="follows",
+        config={"embedding_dim": 3, "epochs": 5, "seed": 7},
+    )
+    assert isinstance(out, GraphSageResult)
+    assert out.vocab_size == 2
+    assert out.embedding_dim == 3
+    assert out.persisted is False
+    assert out.embeddings["u1"] == [0.1, 0.2, 0.3]
+    # Body shape: rel + feature_col + persist (default false) + the
+    # forwarded config kwargs. Caller-reserved fields (rel,
+    # feature_col, persist) inside `config` are ignored — they're
+    # owned by the explicit kwargs.
+    assert seen["body"]["rel"] == "follows"
+    assert seen["body"]["feature_col"] == "features"
+    assert seen["body"]["persist"] is False
+    assert seen["body"]["embedding_dim"] == 3
+    assert seen["body"]["epochs"] == 5
+    assert seen["body"]["seed"] == 7
+
+
+def test_graph_graphsage_train_with_persist(mock_client) -> None:
+    seen: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(
+            200,
+            json={
+                "embeddings": {},
+                "vocab_size": 0,
+                "training_pairs": 0,
+                "final_loss": 0.0,
+                "embedding_dim": 128,
+                "feature_dim": 128,
+                "persisted": True,
+            },
+        )
+
+    client = mock_client(handler)
+    out = client.graph.graphsage(
+        "users", feature_col="features", rel="follows", persist=True
+    )
+    assert out.persisted is True
+    assert seen["body"]["persist"] is True
+
+
+def test_graph_graphsage_train_config_overrides_ignored(mock_client) -> None:
+    # The explicit kwargs (`rel`, `feature_col`, `persist`) must
+    # always win — even if the caller puts conflicting values into
+    # `config`. Documented in the namespace docstring.
+    seen: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(
+            200,
+            json={
+                "embeddings": {},
+                "vocab_size": 0,
+                "training_pairs": 0,
+                "final_loss": 0.0,
+                "embedding_dim": 128,
+                "feature_dim": 128,
+                "persisted": False,
+            },
+        )
+
+    client = mock_client(handler)
+    client.graph.graphsage(
+        "users",
+        feature_col="features",
+        rel="follows",
+        config={
+            "rel": "WRONG",
+            "feature_col": "WRONG",
+            "persist": True,
+            "epochs": 10,
+        },
+    )
+    assert seen["body"]["rel"] == "follows"
+    assert seen["body"]["feature_col"] == "features"
+    assert seen["body"]["persist"] is False
+    assert seen["body"]["epochs"] == 10
+
+
+def test_graph_graphsage_train_error_400(mock_client) -> None:
+    client = mock_client(
+        lambda req: httpx.Response(
+            400, json={"error": "response cap exceeded"}
+        )
+    )
+    with pytest.raises(OriginChainBadRequest):
+        client.graph.graphsage("users", feature_col="features", rel="follows")
+
+
+def test_graph_graphsage_topk(mock_client) -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        assert req.method == "GET"
+        assert req.url.path.endswith("/graph/users/graphsage/follows/topk")
+        assert req.url.params["query"] == "u1"
+        assert req.url.params["k"] == "3"
+        assert req.url.params["metric"] == "cosine"
+        return httpx.Response(
+            200,
+            json=[
+                {"pk": "u2", "score": 0.91},
+                {"pk": "u3", "score": 0.77},
+                {"pk": "u4", "score": 0.64},
+            ],
+        )
+
+    client = mock_client(handler)
+    out = client.graph.graphsage_topk("users", "follows", "u1", k=3)
+    assert out == [
+        GraphEmbeddingHit(pk="u2", score=0.91),
+        GraphEmbeddingHit(pk="u3", score=0.77),
+        GraphEmbeddingHit(pk="u4", score=0.64),
+    ]
+
+
+def test_graph_graphsage_topk_503_not_persisted(mock_client) -> None:
+    client = mock_client(
+        lambda req: httpx.Response(
+            503,
+            json={
+                "error": "graphsage_embeddings_not_persisted",
+                "hint": "POST with persist=true first",
+            },
+        )
+    )
+    with pytest.raises(OriginChainServerError):
+        client.graph.graphsage_topk("users", "follows", "u1", k=5)

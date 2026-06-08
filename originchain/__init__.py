@@ -40,14 +40,21 @@ from .errors import (
     OriginChainServerError,
 )
 from .models import (
+    CentroidsPreview,
     DijkstraResult,
     FacetBucket,
     FtsHit,
     FtsHitWithHighlights,
     FtsResult,
     GraphBfsHit,
+    GraphEmbeddingHit,
     GraphPath,
+    GraphSageResult,
     InstallCentroidsResult,
+    IvfRebalanceStatus,
+    MaterializedViewInstallResult,
+    MaterializedViewRefreshResult,
+    MaterializedViewRows,
     Neighbor,
     Path,
     SqlDelete,
@@ -56,6 +63,10 @@ from .models import (
     SqlResponse,
     SqlResult,
     SqlSelect,
+    TenantConfigSnapshot,
+    TrainAndInstallCentroidsResult,
+    VectorDeleteBulkResult,
+    VectorDeleteResult,
     VectorHit,
     VectorHitV2,
 )
@@ -93,6 +104,18 @@ __all__ = [
     "DijkstraResult",
     "Path",
     "InstallCentroidsResult",
+    # 0.5 additions
+    "VectorDeleteResult",
+    "VectorDeleteBulkResult",
+    "IvfRebalanceStatus",
+    "TrainAndInstallCentroidsResult",
+    "CentroidsPreview",
+    "GraphEmbeddingHit",
+    "GraphSageResult",
+    "MaterializedViewInstallResult",
+    "MaterializedViewRefreshResult",
+    "MaterializedViewRows",
+    "TenantConfigSnapshot",
 ]
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"

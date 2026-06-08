@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "originchain"
-version = "0.4.0"
+version = "0.5.0"
 description = "Official Python client for OriginChain - managed database for AI applications."
 readme = "README.md"
 authors = [{ name = "Silicoyn Technologies", email = "support@originchain.ai" }]

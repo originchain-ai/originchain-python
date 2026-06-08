@@ -24,13 +24,24 @@ import json as _json
 from typing import TYPE_CHECKING, Any, List, Literal, Mapping, Optional
 
 from .models import (
+    CentroidsPreview,
     FacetBucket,
     FtsHitWithHighlights,
     FtsResult,
+    GraphEmbeddingHit,
+    GraphSageResult,
     InstallCentroidsResult,
+    IvfRebalanceStatus,
+    MaterializedViewInstallResult,
+    MaterializedViewRefreshResult,
+    MaterializedViewRows,
     Path,
     SqlExecResult,
     SqlResult,
+    TenantConfigSnapshot,
+    TrainAndInstallCentroidsResult,
+    VectorDeleteBulkResult,
+    VectorDeleteResult,
     VectorHitV2,
     _decode_sql_response,
 )
@@ -101,6 +112,58 @@ class _SqlNamespace:
         if columns is None and rows:
             columns = list(rows[0].keys())
         return SqlResult(rows=rows, columns=columns)
+
+    def install_materialized_view(
+        self,
+        name: str,
+        query: str,
+        refresh_mode: Literal["manual", "on_write"] = "manual",
+        source_schema: Optional[str] = None,
+    ) -> MaterializedViewInstallResult:
+        """Install a materialized view: translate ``query``, run the
+        initial materialization, and stamp the snapshot under
+        ``mv_snapshot_key`` in one WAL frame. ``refresh_mode="manual"``
+        is the only mode shipped today (``"on_write"`` is parsed but
+        falls back to manual; the on-write incremental path is a v2
+        punt). ``source_schema`` is an optional hint — when omitted, the
+        handler derives it from the plan's first scan target."""
+        body: dict[str, Any] = {
+            "name": name,
+            "query": query,
+            "refresh_mode": refresh_mode,
+        }
+        if source_schema is not None:
+            body["source_schema"] = source_schema
+        payload = self._p._request(
+            "POST",
+            f"/v1/tenants/{self._p.tenant}/sql/materialized-views",
+            json=body,
+        ).json()
+        return MaterializedViewInstallResult._from_payload(payload)
+
+    def refresh_materialized_view(
+        self, name: str
+    ) -> MaterializedViewRefreshResult:
+        """On-demand refresh of an installed materialized view. Loads
+        the persisted definition, re-translates + re-executes the
+        query, atomically overwrites the snapshot. 404 when ``name``
+        isn't installed."""
+        payload = self._p._request(
+            "POST",
+            f"/v1/tenants/{self._p.tenant}/sql/materialized-views/{name}/refresh",
+        ).json()
+        return MaterializedViewRefreshResult._from_payload(payload)
+
+    def read_materialized_view(self, name: str) -> MaterializedViewRows:
+        """Read the current snapshot of an installed materialized
+        view. ``rows`` is the rmp-decoded row bundle from the last
+        refresh; the shape is whatever the original SELECT projected.
+        404 when ``name`` isn't installed."""
+        payload = self._p._request(
+            "GET",
+            f"/v1/tenants/{self._p.tenant}/sql/materialized-views/{name}",
+        ).json()
+        return MaterializedViewRows._from_payload(payload)
 
     def execute(self, stmt: str) -> SqlExecResult:
         """Run a non-SELECT (INSERT / UPDATE / DELETE).
@@ -197,14 +260,60 @@ class _VectorNamespace:
         ).json()
         return [VectorHitV2._from_payload(h) for h in hits]
 
-    def delete(self, table: str, vec_id: str) -> None:
+    def delete(
+        self,
+        table: str,
+        vec_id: str,
+        index: Optional[Literal["hnsw", "ivf", "ivf_pq"]] = None,
+        repair: bool = False,
+    ) -> VectorDeleteResult:
         """Remove a single vector from ``table``. Idempotent — deleting
-        a non-existent id is a 204, not a 404, so callers don't have
-        to swallow the not-found case in cleanup paths."""
-        self._p._request(
+        a non-existent id returns ``{"deleted": false}`` (200), not 404,
+        so callers don't have to special-case the missing-row branch.
+
+        ``index`` picks the engine dispatch (``"hnsw"`` default,
+        ``"ivf"``, or ``"ivf_pq"``). ``repair=True`` opts the HNSW arm
+        into the graph-repair path (re-links neighbours across the hole
+        instead of tombstoning only) — ignored on the IVF arms which
+        shrink cleanly without topology repair. Pre-2026-06-08 the
+        handler didn't exist; 0.4 was wire-ready but errored at runtime
+        against the engine."""
+        params: dict[str, str] = {}
+        if index is not None:
+            params["index"] = index
+        if repair:
+            params["repair"] = "true"
+        payload = self._p._request(
             "DELETE",
             f"/v1/tenants/{self._p.tenant}/vector/{table}/{vec_id}",
-        )
+            params=params or None,
+        ).json()
+        return VectorDeleteResult._from_payload(payload)
+
+    def delete_bulk(
+        self,
+        table: str,
+        ids: List[str],
+        index: Optional[Literal["hnsw", "ivf", "ivf_pq"]] = None,
+        repair: bool = False,
+    ) -> VectorDeleteBulkResult:
+        """Remove up to ``oc_vector::MAX_BULK_DELETE`` (10 000) vectors
+        in a single WAL frame. Duplicate ids in one call are deduped
+        server-side and count once toward ``deleted_count``. ``repair``
+        only applies to the HNSW arm — see :meth:`delete`. Returns
+        ``{deleted_count, missing_count}`` so the caller can detect
+        partial overlap with the live set."""
+        body: dict[str, Any] = {"ids": list(ids)}
+        if index is not None:
+            body["index"] = index
+        if repair:
+            body["repair"] = True
+        payload = self._p._request(
+            "POST",
+            f"/v1/tenants/{self._p.tenant}/vector/{table}/delete-bulk",
+            json=body,
+        ).json()
+        return VectorDeleteBulkResult._from_payload(payload)
 
     def install_centroids(
         self,
@@ -214,16 +323,84 @@ class _VectorNamespace:
         """Pre-install IVF centroids for ``table``. The server validates
         every centroid is the same dim and atomically swaps the
         partitioning. The number of centroids becomes the number of
-        partitions; ``dim`` is taken from the first centroid."""
+        partitions; ``dim`` is taken from the first centroid.
+
+        0.5: URL renamed to ``install-centroids`` (hyphen) to match the
+        engine's admin-route convention. The 0.4 path with an underscore
+        no longer exists on the server — callers on 0.4 hit 404."""
         body: dict[str, Any] = {
             "centroids": [list(c) for c in centroids],
         }
         payload = self._p._request(
             "POST",
-            f"/v1/tenants/{self._p.tenant}/vector/{table}/install_centroids",
+            f"/v1/tenants/{self._p.tenant}/vector/{table}/install-centroids",
             json=body,
         ).json()
         return InstallCentroidsResult._from_payload(payload)
+
+    def train_and_install_centroids(
+        self,
+        table: str,
+        partitions: int,
+        init: Optional[Literal["kmeans_plus_plus", "random_sample"]] = None,
+        max_iterations: Optional[int] = None,
+        batch_size: Optional[int] = None,
+        convergence_threshold: Optional[float] = None,
+        seed: Optional[int] = None,
+    ) -> TrainAndInstallCentroidsResult:
+        """Read up to ``MAX_TRAINING_SAMPLE_VECTORS`` existing vectors,
+        run mini-batch k-means in-process on the engine, then install
+        the resulting centroid matrix — the common path for an operator
+        bootstrapping an IVF table after a `put_vec` row of writes.
+
+        Refuses with 400 when ``count < partitions × 4`` (k-means
+        under-population guard). Synchronous on the request thread —
+        large corpora can tie the request up for several seconds; the
+        async-job variant is a v2 punt."""
+        body: dict[str, Any] = {"partitions": int(partitions)}
+        if init is not None:
+            body["init"] = init
+        if max_iterations is not None:
+            body["max_iterations"] = int(max_iterations)
+        if batch_size is not None:
+            body["batch_size"] = int(batch_size)
+        if convergence_threshold is not None:
+            body["convergence_threshold"] = float(convergence_threshold)
+        if seed is not None:
+            body["seed"] = int(seed)
+        payload = self._p._request(
+            "POST",
+            f"/v1/tenants/{self._p.tenant}/vector/{table}"
+            f"/train-and-install-centroids",
+            json=body,
+        ).json()
+        return TrainAndInstallCentroidsResult._from_payload(payload)
+
+    def centroids(self, table: str) -> CentroidsPreview:
+        """Read-only "is anything installed?" inspector. Returns 200
+        with ``installed=False`` when nothing has been installed yet
+        (not 404 — the route is meaningful for any registered table).
+        ``centroids_preview`` is a truncated peek (first 4 centroids,
+        first 8 dims each) so the response stays small at any
+        ``partitions × dim``."""
+        payload = self._p._request(
+            "GET",
+            f"/v1/tenants/{self._p.tenant}/vector/{table}/centroids",
+        ).json()
+        return CentroidsPreview._from_payload(payload)
+
+    def rebalance_status(self, table: str) -> IvfRebalanceStatus:
+        """Per-cell live-count + skew report for an IVF table. ``action``
+        is one of ``"none" | "recommended" | "required"`` — a hint, not
+        a trigger; nothing is auto-rebalanced. The operator decides
+        whether to re-train via :meth:`train_and_install_centroids`.
+        503 when no centroids have been installed (the table isn't an
+        IVF table or hasn't been bootstrapped yet)."""
+        payload = self._p._request(
+            "GET",
+            f"/v1/tenants/{self._p.tenant}/vector/{table}/ivf-rebalance-status",
+        ).json()
+        return IvfRebalanceStatus._from_payload(payload)
 
 
 # ─────────────────────────── FTS namespace ───────────────────────────
@@ -554,6 +731,99 @@ class _GraphNamespaceExtended:
             out[key] = int(row.get("label", 0))
         return out
 
+    def node2vec_topk(
+        self,
+        schema: str,
+        rel: str,
+        query_pk: str,
+        k: int,
+        metric: Literal["cosine", "dot", "l2", "manhattan"] = "cosine",
+    ) -> list[GraphEmbeddingHit]:
+        """Top-``k`` nodes most similar to ``query_pk`` under ``metric``,
+        against the persisted Node2Vec embeddings for ``(schema, rel)``.
+
+        Persistence is the prerequisite: call ``POST .../node2vec``
+        with ``persist=true`` first. Until then the route 503s with a
+        ``"POST with persist=true first"`` hint; the SDK surfaces that
+        as :class:`OCServerError` so callers can detect the missing-
+        prerequisite case."""
+        params: dict[str, str] = {
+            "query": query_pk,
+            "k": str(k),
+            "metric": metric,
+        }
+        hits = self._p._request(
+            "GET",
+            f"/v1/tenants/{self._p.tenant}/graph/{schema}/node2vec/{rel}/topk",
+            params=params,
+        ).json()
+        return [GraphEmbeddingHit._from_payload(h) for h in hits]
+
+    def graphsage(
+        self,
+        schema: str,
+        feature_col: str,
+        rel: str,
+        config: Optional[Mapping[str, Any]] = None,
+        persist: bool = False,
+    ) -> GraphSageResult:
+        """Train GraphSAGE attribute-aware node embeddings on the row
+        universe under ``schema`` and return the per-node vectors.
+
+        ``config`` is forwarded verbatim as the request body's optional
+        knobs (``embedding_dim`` / ``num_layers`` / ``aggregator`` /
+        ``epochs`` / ``seed`` / ...); a missing key picks the engine's
+        library default. ``persist=True`` writes the embeddings under
+        the sibling ``vec_graphsage`` key shape so :meth:`graphsage_topk`
+        becomes callable. Server refuses with 400 when the projected
+        response (``vocab_size × embedding_dim``) exceeds the 1M-float
+        cap — use the CLI export for larger embedding sets."""
+        body: dict[str, Any] = {
+            "rel": rel,
+            "feature_col": feature_col,
+            "persist": bool(persist),
+        }
+        if config is not None:
+            for key, value in config.items():
+                if key in ("rel", "feature_col", "persist"):
+                    # Spec-controlled fields — caller picks via the
+                    # explicit kwargs above, not via the config blob.
+                    continue
+                body[key] = value
+        payload = self._p._request(
+            "POST",
+            f"/v1/tenants/{self._p.tenant}/graph/{schema}/graphsage",
+            json=body,
+        ).json()
+        return GraphSageResult._from_payload(payload)
+
+    def graphsage_topk(
+        self,
+        schema: str,
+        rel: str,
+        query_pk: str,
+        k: int,
+        metric: Literal["cosine", "dot", "l2", "manhattan"] = "cosine",
+    ) -> list[GraphEmbeddingHit]:
+        """Top-``k`` nodes most similar to ``query_pk`` under ``metric``,
+        against the persisted GraphSAGE embeddings. Same shape as
+        :meth:`node2vec_topk` so SDKs only learn the wire grammar once.
+
+        503 (surfaced as :class:`OCServerError`) when no embeddings have
+        been persisted under ``(schema, rel)`` yet — call
+        :meth:`graphsage` with ``persist=True`` first."""
+        params: dict[str, str] = {
+            "query": query_pk,
+            "k": str(k),
+            "metric": metric,
+        }
+        hits = self._p._request(
+            "GET",
+            f"/v1/tenants/{self._p.tenant}/graph/{schema}/graphsage/{rel}/topk",
+            params=params,
+        ).json()
+        return [GraphEmbeddingHit._from_payload(h) for h in hits]
+
     def betweenness(
         self,
         schema: str,
@@ -581,9 +851,67 @@ class _GraphNamespaceExtended:
         return out
 
 
+# ─────────────────────────── Admin namespace ───────────────────────────
+#
+# Hangs off ``client.admin`` and routes against the admin sub-router
+# (``/v1/admin/*``). The tenant-config endpoints are gated by the
+# admin-token middleware on the server, NOT the per-tenant bearer; the
+# SDK forwards whatever auth header the parent client has on it and
+# lets the server 401 the request when the wrong token is presented.
+# An operator typically uses a dedicated client constructed with the
+# admin token rather than the per-tenant bearer.
+
+
+class _AdminNamespace:
+    """``client.admin`` — tenant-config admin surface (0.5 addition).
+
+    Today's only routes are the per-tenant replication-mode config
+    (install + read). Both are idempotent; install replaces the prior
+    config for the same tenant. A tenant whose config has never been
+    installed runs as ``active_passive`` — the legacy direct-WAL path,
+    same as today's behaviour."""
+
+    def __init__(self, parent: "OriginChain") -> None:
+        self._p = parent
+
+    def install_tenant_config(
+        self,
+        tenant_id: str,
+        replication_mode: Literal["active_passive", "raft_quorum"] = "active_passive",
+    ) -> TenantConfigSnapshot:
+        """``POST /v1/admin/tenants/:tenant/config`` — install (or
+        replace) the replication mode for ``tenant_id``. Idempotent.
+
+        ``"active_passive"`` is today's default and matches the legacy
+        direct-WAL write path. ``"raft_quorum"`` routes writes through
+        the Raft consensus path that landed in Phase D; the server
+        rejects with 400 when the variant's ``is_implemented`` returns
+        false (the SDK relays as :class:`OCValidationError`)."""
+        body: dict[str, Any] = {"replication_mode": replication_mode}
+        payload = self._p._request(
+            "POST",
+            f"/v1/admin/tenants/{tenant_id}/config",
+            json=body,
+        ).json()
+        return TenantConfigSnapshot._from_payload(payload)
+
+    def get_tenant_config(self, tenant_id: str) -> TenantConfigSnapshot:
+        """``GET /v1/admin/tenants/:tenant/config`` — read the installed
+        replication mode. Returns the implicit ``active_passive``
+        default (with ``installed=None``) when no admin has ever
+        installed a config for this tenant, so callers always see a
+        truthful non-404 shape."""
+        payload = self._p._request(
+            "GET",
+            f"/v1/admin/tenants/{tenant_id}/config",
+        ).json()
+        return TenantConfigSnapshot._from_payload(payload)
+
+
 __all__ = [
     "_SqlNamespace",
     "_VectorNamespace",
     "_FtsNamespace",
     "_GraphNamespaceExtended",
+    "_AdminNamespace",
 ]

@@ -216,19 +216,23 @@ def test_vector_ns_delete(mock_client) -> None:
     def handler(req: httpx.Request) -> httpx.Response:
         seen["method"] = req.method
         seen["path"] = req.url.path
-        return httpx.Response(204)
+        return httpx.Response(200, json={"deleted": True})
 
     client = mock_client(handler)
-    client.vector.delete("embeddings", "doc-1")
+    out = client.vector.delete("embeddings", "doc-1")
     assert seen["method"] == "DELETE"
     assert seen["path"].endswith("/vector/embeddings/doc-1")
+    assert out.deleted is True
 
 
 def test_vector_ns_install_centroids(mock_client) -> None:
     seen: dict = {}
 
     def handler(req: httpx.Request) -> httpx.Response:
-        assert req.url.path.endswith("/vector/embeddings/install_centroids")
+        # 0.5: URL is `install-centroids` (hyphen) to match the
+        # engine's admin-route convention. The underscore path the
+        # 0.4 SDK used returned 404 against the deployed engine.
+        assert req.url.path.endswith("/vector/embeddings/install-centroids")
         seen["body"] = json.loads(req.content)
         return httpx.Response(200, json={"installed": True, "partitions": 2, "dim": 3})
 
@@ -269,3 +273,273 @@ def test_vector_ns_install_centroids_error_400(mock_client) -> None:
     )
     with pytest.raises(OriginChainBadRequest):
         client.vector.install_centroids("embeddings", [[0.0, 0.0], [1.0]])
+
+
+# ─────────────────────── 0.5 additions (2026-06-08) ───────────────────────
+# `delete_bulk`, `train_and_install_centroids`, `centroids`,
+# `rebalance_status`, and the post-handler-shipped `delete` end-to-end
+# verification (handler was missing in 0.4).
+
+
+from originchain import (
+    CentroidsPreview,
+    IvfRebalanceStatus,
+    TrainAndInstallCentroidsResult,
+    VectorDeleteBulkResult,
+    VectorDeleteResult,
+)
+
+
+def test_vector_ns_delete_missing_row_is_idempotent(mock_client) -> None:
+    # Missing-row case returns 200 + {"deleted": false}, NOT 404.
+    # Lets cleanup paths call delete unconditionally without try/except.
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"deleted": False})
+
+    client = mock_client(handler)
+    out = client.vector.delete("embeddings", "never-existed")
+    assert isinstance(out, VectorDeleteResult)
+    assert out.deleted is False
+
+
+def test_vector_ns_delete_with_index_and_repair(mock_client) -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        assert req.url.params.get("index") == "ivf"
+        assert req.url.params.get("repair") == "true"
+        return httpx.Response(200, json={"deleted": True})
+
+    client = mock_client(handler)
+    out = client.vector.delete("embeddings", "doc-1", index="ivf", repair=True)
+    assert out.deleted is True
+
+
+def test_vector_ns_delete_bulk(mock_client) -> None:
+    seen: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        assert req.method == "POST"
+        assert req.url.path.endswith("/vector/embeddings/delete-bulk")
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(
+            200, json={"deleted_count": 2, "missing_count": 1}
+        )
+
+    client = mock_client(handler)
+    out = client.vector.delete_bulk("embeddings", ["a", "b", "c"])
+    assert isinstance(out, VectorDeleteBulkResult)
+    assert out.deleted_count == 2
+    assert out.missing_count == 1
+    assert seen["body"]["ids"] == ["a", "b", "c"]
+    # Defaults: no `index` / no `repair` keys when caller omits them.
+    assert "index" not in seen["body"]
+    assert "repair" not in seen["body"]
+
+
+def test_vector_ns_delete_bulk_with_repair(mock_client) -> None:
+    seen: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(200, json={"deleted_count": 1, "missing_count": 0})
+
+    client = mock_client(handler)
+    client.vector.delete_bulk(
+        "embeddings", ["doc-1"], index="hnsw", repair=True
+    )
+    assert seen["body"]["index"] == "hnsw"
+    assert seen["body"]["repair"] is True
+
+
+def test_vector_ns_delete_bulk_error_400(mock_client) -> None:
+    client = mock_client(
+        lambda req: httpx.Response(400, json={"error": "too many ids"})
+    )
+    with pytest.raises(OriginChainBadRequest):
+        client.vector.delete_bulk("embeddings", ["x"] * 99999)
+
+
+def test_vector_ns_train_and_install_centroids(mock_client) -> None:
+    seen: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        assert req.method == "POST"
+        assert req.url.path.endswith(
+            "/vector/embeddings/train-and-install-centroids"
+        )
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(
+            200,
+            json={
+                "trained": True,
+                "installed": True,
+                "partitions": 8,
+                "dim": 128,
+                "iterations": 42,
+                "converged": True,
+                "last_max_shift": 7.3e-5,
+                "training_corpus_size": 10000,
+            },
+        )
+
+    client = mock_client(handler)
+    out = client.vector.train_and_install_centroids(
+        "embeddings",
+        partitions=8,
+        init="kmeans_plus_plus",
+        max_iterations=100,
+        seed=42,
+    )
+    assert isinstance(out, TrainAndInstallCentroidsResult)
+    assert out.trained is True
+    assert out.installed is True
+    assert out.partitions == 8
+    assert out.iterations == 42
+    assert out.converged is True
+    assert out.training_corpus_size == 10000
+    assert seen["body"]["partitions"] == 8
+    assert seen["body"]["init"] == "kmeans_plus_plus"
+    assert seen["body"]["max_iterations"] == 100
+    assert seen["body"]["seed"] == 42
+
+
+def test_vector_ns_train_and_install_centroids_minimal_body(mock_client) -> None:
+    seen: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(
+            200,
+            json={
+                "trained": True,
+                "installed": True,
+                "partitions": 4,
+                "dim": 3,
+                "iterations": 5,
+                "converged": False,
+                "last_max_shift": 0.1,
+                "training_corpus_size": 100,
+            },
+        )
+
+    client = mock_client(handler)
+    client.vector.train_and_install_centroids("embeddings", partitions=4)
+    # Only `partitions` should land in the body when no optional knob
+    # is supplied — keeps the wire request minimal and lets server-side
+    # defaults govern training.
+    assert seen["body"] == {"partitions": 4}
+
+
+def test_vector_ns_train_and_install_centroids_error_400(mock_client) -> None:
+    # Under-population guard: server returns 400 when count < partitions*4.
+    client = mock_client(
+        lambda req: httpx.Response(
+            400, json={"error": "not enough vectors to train 8 partitions"}
+        )
+    )
+    with pytest.raises(OriginChainBadRequest):
+        client.vector.train_and_install_centroids("embeddings", partitions=8)
+
+
+def test_vector_ns_centroids_installed(mock_client) -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        assert req.method == "GET"
+        assert req.url.path.endswith("/vector/embeddings/centroids")
+        return httpx.Response(
+            200,
+            json={
+                "installed": True,
+                "partitions": 2,
+                "dim": 3,
+                "centroids_preview": [
+                    [0.1, 0.2, 0.3],
+                    [0.4, 0.5, 0.6],
+                ],
+            },
+        )
+
+    client = mock_client(handler)
+    out = client.vector.centroids("embeddings")
+    assert isinstance(out, CentroidsPreview)
+    assert out.installed is True
+    assert out.partitions == 2
+    assert out.dim == 3
+    assert out.centroids_preview == [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]
+
+
+def test_vector_ns_centroids_not_installed(mock_client) -> None:
+    # `installed=False` is a 200, not a 404 — the route is meaningful
+    # for any table; centroids are optional state.
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "installed": False,
+                "partitions": 0,
+                "dim": 0,
+                "centroids_preview": [],
+            },
+        )
+
+    client = mock_client(handler)
+    out = client.vector.centroids("embeddings")
+    assert out.installed is False
+    assert out.centroids_preview == []
+
+
+def test_vector_ns_rebalance_status(mock_client) -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        assert req.method == "GET"
+        assert req.url.path.endswith(
+            "/vector/embeddings/ivf-rebalance-status"
+        )
+        return httpx.Response(
+            200,
+            json={
+                "total_live": 1000,
+                "partitions": 4,
+                "live_per_cell": [250, 250, 250, 250],
+                "skew": 1.0,
+                "action": "None",
+            },
+        )
+
+    client = mock_client(handler)
+    out = client.vector.rebalance_status("embeddings")
+    assert isinstance(out, IvfRebalanceStatus)
+    assert out.total_live == 1000
+    assert out.partitions == 4
+    assert out.live_per_cell == [250, 250, 250, 250]
+    assert out.skew == 1.0
+    # SDK normalises the serde-tagged action variant to lowercase.
+    assert out.action == "none"
+
+
+def test_vector_ns_rebalance_status_recommended(mock_client) -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "total_live": 1000,
+                "partitions": 4,
+                "live_per_cell": [700, 100, 100, 100],
+                "skew": 2.8,
+                "action": "Recommended",
+            },
+        )
+
+    client = mock_client(handler)
+    out = client.vector.rebalance_status("embeddings")
+    assert out.skew > 2.0
+    assert out.action == "recommended"
+
+
+def test_vector_ns_rebalance_status_503(mock_client) -> None:
+    # 503 when no centroids have been installed (table isn't IVF /
+    # hasn't been bootstrapped). Surfaces as OriginChainServerError.
+    client = mock_client(
+        lambda req: httpx.Response(
+            503, json={"error": "no IVF centroids installed"}
+        )
+    )
+    with pytest.raises(OriginChainServerError):
+        client.vector.rebalance_status("embeddings")
