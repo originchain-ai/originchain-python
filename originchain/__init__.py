@@ -64,6 +64,8 @@ from .models import (
     SqlResult,
     SqlSelect,
     TenantConfigSnapshot,
+    TenantConfiguration,
+    TenantUsage,
     TrainAndInstallCentroidsResult,
     VectorDeleteBulkResult,
     VectorDeleteResult,
@@ -116,6 +118,9 @@ __all__ = [
     "MaterializedViewRefreshResult",
     "MaterializedViewRows",
     "TenantConfigSnapshot",
+    # weather-name removal
+    "TenantConfiguration",
+    "TenantUsage",
 ]
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
