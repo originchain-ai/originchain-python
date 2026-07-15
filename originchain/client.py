@@ -47,6 +47,7 @@ from .models import (
     Neighbor,
     SqlResponse,
     SqlSelect,
+    TenantUsage,
     VectorHit,
     _decode_sql_response,
 )
@@ -345,6 +346,19 @@ class OriginChain:
         return self._request(
             "POST", f"/v1/tenants/{self.tenant}/query", json=plan
         ).json()
+
+    def usage(self) -> TenantUsage:
+        """Live usage counters + the tenant's compute configuration.
+
+        The response ``tier`` is the neutral configuration slug
+        (``entry`` / ``standard`` / ``advanced`` / ``custom``); the
+        internal weather codename is never exposed. Prefer
+        :attr:`TenantUsage.configuration` for the full spec + list
+        price. Both are ``None`` in legacy per-addon mode."""
+        body = self._request(
+            "GET", f"/v1/tenants/{self.tenant}/usage"
+        ).json()
+        return TenantUsage._from_payload(body)
 
     # ── SQL ───────────────────────────────────────────────────────────
 

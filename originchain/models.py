@@ -582,6 +582,79 @@ class VectorHitV2:
         )
 
 
+# ─────────────────────────── Usage / configuration ───────────────────────────
+
+
+@dataclass(frozen=True)
+class TenantConfiguration:
+    """Neutral, spec-based compute configuration from ``GET
+    /v1/tenants/:t/usage``.
+
+    This REPLACES the internal weather codename (thunder/storm/cyclone/…)
+    the engine used to surface - the SDK never exposes that codename.
+    ``slug`` is the stable machine id (``entry`` / ``standard`` /
+    ``advanced`` / ``custom``); ``label`` is display text such as
+    ``"4 vCPU / 16 GB, HA"``. Quantitative fields and ``monthly_price``
+    are ``None`` for the sales-sized ``custom`` configuration."""
+
+    slug: str
+    label: str
+    ha: bool
+    vcpu: Optional[int] = None
+    ram_gb: Optional[int] = None
+    storage_gb: Optional[int] = None
+    monthly_price: Optional[int] = None
+
+    @classmethod
+    def _from_payload(cls, p: Mapping[str, Any]) -> "TenantConfiguration":
+        return cls(
+            slug=str(p.get("slug", "")),
+            label=str(p.get("label", "")),
+            ha=bool(p.get("ha", False)),
+            vcpu=int(p["vcpu"]) if p.get("vcpu") is not None else None,
+            ram_gb=int(p["ram_gb"]) if p.get("ram_gb") is not None else None,
+            storage_gb=int(p["storage_gb"]) if p.get("storage_gb") is not None else None,
+            monthly_price=(
+                int(p["monthly_price"]) if p.get("monthly_price") is not None else None
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class TenantUsage:
+    """Response of the engine's ``GET /v1/tenants/:t/usage``.
+
+    ``tier`` is the neutral configuration slug (``entry`` / ``standard``
+    / ``advanced`` / ``custom``) - never the internal weather codename,
+    which the SDK does not expose. Prefer ``configuration`` for the full
+    spec + list price. ``tier``, ``configuration``, and ``limits`` are
+    all ``None`` in legacy per-addon mode."""
+
+    tenant: str
+    used: Mapping[str, Any]
+    tier: Optional[str] = None
+    configuration: Optional[TenantConfiguration] = None
+    limits: Optional[Mapping[str, Any]] = None
+    schemas: Tuple[Any, ...] = ()
+
+    @classmethod
+    def _from_payload(cls, p: Mapping[str, Any]) -> "TenantUsage":
+        cfg = p.get("configuration")
+        limits = p.get("limits")
+        return cls(
+            tenant=str(p.get("tenant", "")),
+            used=dict(p.get("used", {})),
+            tier=str(p["tier"]) if p.get("tier") is not None else None,
+            configuration=(
+                TenantConfiguration._from_payload(cfg)
+                if isinstance(cfg, Mapping)
+                else None
+            ),
+            limits=dict(limits) if isinstance(limits, Mapping) else None,
+            schemas=tuple(p.get("schemas", ()) or ()),
+        )
+
+
 __all__ = [
     "SqlSelect",
     "SqlInsert",
@@ -613,4 +686,7 @@ __all__ = [
     "MaterializedViewRefreshResult",
     "MaterializedViewRows",
     "TenantConfigSnapshot",
+    # weather-name removal
+    "TenantConfiguration",
+    "TenantUsage",
 ]
