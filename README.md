@@ -50,7 +50,15 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-## SQL
+> **Note:** the typed namespaces shown below (`db.sql.query`, `db.vector.*`,
+> `db.fts.*`, the extended `db.graph.*` algorithms, `db.admin.*`) are
+> currently available on the **sync client only**; async parity is planned.
+> `AsyncOriginChain` today covers `schemas`, `rows`, `ask()`, `usage()`,
+> the callable `sql()` / `sql_one()`, `vector_put()` / `vector_topk()`,
+> `fts_index()` / `fts_search()`, and core graph traversals
+> (`neighbors` / `reverse_neighbors` / `bfs` / `path` / `dijkstra`).
+
+## SQL (sync client)
 
 ```python
 # Typed surface (recommended):
@@ -71,7 +79,7 @@ The legacy callable `db.sql("SELECT ...")` still works and returns the
 tagged-union dataclass. `db.sql_one("SELECT ... LIMIT 1")` returns the
 first row dict (or `None`).
 
-## Vector
+## Vector (sync client)
 
 ```python
 # Typed surface (recommended): `dim` is derived from the vector length.
@@ -97,7 +105,7 @@ print(res.installed, res.partitions, res.dim)
 The legacy `db.vector_put(...)` / `db.vector_topk(...)` methods stay
 available for code written before the typed namespace landed.
 
-## Full-text
+## Full-text (sync client)
 
 ```python
 db.fts.index("articles", "body", "d1", "the quick brown fox")
@@ -123,7 +131,7 @@ db.fts.install_stopwords("articles", "body", ["the", "a", "an"])
 
 `db.fts_index(...)` / `db.fts_search(...)` remain for back-compat.
 
-## Graph
+## Graph (sync client)
 
 ```python
 # Single-hop neighbours + BFS:
@@ -191,9 +199,10 @@ on.
 ## What's new in 0.5
 
 0.5.0 wires up the engine endpoints that shipped after the
-typed-namespace batch (`0.4.0`). All new methods are additive — no
+typed-namespace batch. All new methods are additive — no
 breaking changes — and require an engine deployed at commit
-`2c1fe55a` or later.
+`2c1fe55a` or later. The examples below use the typed namespaces and
+are **sync-client only** for now; async parity is planned.
 
 ### Vector: bulk delete + IVF lifecycle
 
