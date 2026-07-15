@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "originchain"
-version = "0.6.0"
+version = "0.5.0"
 description = "Official Python client for OriginChain - managed database for AI applications."
 readme = "README.md"
 authors = [{ name = "Silicoyn Technologies", email = "support@originchain.ai" }]
@@ -43,8 +43,8 @@ dev = [
 [project.urls]
 Homepage      = "https://originchain.ai"
 Documentation = "https://originchain.ai/docs"
-Source        = "https://github.com/silicoyn/originchain-python"
-Issues        = "https://github.com/silicoyn/originchain-python/issues"
+Source        = "https://github.com/originchain-ai/originchain-python"
+Issues        = "https://github.com/originchain-ai/originchain-python/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["originchain"]
@@ -52,6 +52,15 @@ packages = ["originchain"]
 [tool.ruff]
 line-length = 100
 target-version = "py39"
+
+[tool.ruff.lint.per-file-ignores]
+# Deliberate mid-file imports: client.py imports _namespaces after the
+# class definitions it depends on (circular-import avoidance); the
+# tests import late after test-local setup.
+"originchain/client.py" = ["E402"]
+"tests/test_graph.py" = ["E402"]
+"tests/test_sql.py" = ["E402"]
+"tests/test_vector.py" = ["E402"]
 
 [tool.mypy]
 strict = true
