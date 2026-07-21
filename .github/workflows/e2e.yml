@@ -1,0 +1,25 @@
+name: e2e
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e .
+      # Live end-to-end smoke against the sdk-ci tenant. Self-skips (exits 0)
+      # when OC_BASE is unset, so forks without secrets stay green.
+      - run: python tests/e2e_smoke.py
+        env:
+          OC_BASE: ${{ secrets.OC_BASE }}
+          OC_BEARER: ${{ secrets.OC_BEARER }}
+          OC_TENANT: ${{ secrets.OC_TENANT }}
+          OC_NS: py_ci_${{ github.run_id }}
