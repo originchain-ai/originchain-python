@@ -3,6 +3,63 @@
 All notable changes to the OriginChain Python SDK. See the repo-root
 `CHANGELOG.md` for engine releases.
 
+## [0.6.0] — 2026-07-29
+
+Two wire-format bug fixes. Both surfaces were **100% broken in 0.5.0** —
+neither ever produced a successful engine response — so nothing that
+works today changes behaviour.
+
+### Fixed
+
+- **`sql.query(params=...)` now sends positional bind parameters.**
+  0.5.0 sent `params` as a named JSON object (`{"a": 1}`). The `/sql`
+  handler binds positionally: `params` is a JSON **array** and `$1` /
+  `$2` index into it. Every parameterised query failed. The parameter
+  is now `Sequence[Any]` and reaches the wire verbatim as an array —
+  the same shape the TypeScript client (`params?: unknown[]`) and the
+  Go client (variadic `params ...any`) already send.
+- **`sql.install_materialized_view(refresh_mode=...)` now sends live
+  wire values.** 0.5.0 sent `"manual"` / `"on_write"`. The engine's
+  `RefreshMode` enum is `#[serde(rename_all = "snake_case")]` over
+  `OnDemand | Incremental`, and unknown values are a hard 400 — so
+  every install failed. Accepted values are now `"on_demand"`
+  (default) and `"incremental"`.
+
+### Changed
+
+- `refresh_mode` default is `"on_demand"` (was `"manual"`); same
+  intended behaviour, correct wire value. `"manual"` / `"on_write"`
+  still work as deprecated aliases for `"on_demand"` /
+  `"incremental"` and emit a `DeprecationWarning`; they are removed in
+  1.0. Any other value raises `OCValidationError` **before** the
+  request is sent rather than round-tripping to a 400.
+- `sql.query(params=...)` no longer accepts a `Mapping`. A `dict`
+  raises `OCValidationError` naming the positional rewrite. Flattening
+  a dict into a guessed order would bind values to placeholders the
+  caller never wrote down, and the accompanying SQL would still carry
+  named placeholders the engine can't parse — a clear error beats a
+  silently-wrong-row bug. A bare `str` / `bytes` is rejected for the
+  same reason (it would otherwise bind one parameter per character).
+
+### Materialized-view refresh-mode semantics (documented, unchanged)
+
+- `"on_demand"` — full recompute on an explicit
+  `refresh_materialized_view()` call. The only mode to build against
+  today.
+- `"incremental"` — apply-time maintenance as source rows are written.
+  **Aggregate** materialized views are behind a preview flag that
+  ships OFF, so an incremental *aggregate* view currently returns
+  `422`. Don't depend on it without confirming the flag for your
+  instance.
+
+### Migration from 0.5.0
+
+- `db.sql.query("... WHERE s = :s", params={"s": "AAPL"})` →
+  `db.sql.query("... WHERE s = $1", params=["AAPL"])`
+- `refresh_mode="manual"` → `refresh_mode="on_demand"`;
+  `refresh_mode="on_write"` → `refresh_mode="incremental"`
+- Default `User-Agent` is `originchain-python/0.6.0`
+
 ## [0.5.0] — 2026-07-15
 
 Everything below is new relative to 0.4.0 **as published on PyPI**

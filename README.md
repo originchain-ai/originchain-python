@@ -61,10 +61,11 @@ asyncio.run(main())
 ## SQL (sync client)
 
 ```python
-# Typed surface (recommended):
+# Typed surface (recommended). Bind parameters are POSITIONAL: pass a
+# list whose order matches the $1, $2, ... placeholders.
 result = db.sql.query(
-    "SELECT order_id, qty FROM trading.orders WHERE symbol = :s",
-    params={"s": "AAPL"},
+    "SELECT order_id, qty FROM trading.orders WHERE symbol = $1 AND qty > $2",
+    params=["AAPL", 50],
 )
 for row in result.rows:
     print(row["order_id"], row["qty"])
@@ -78,6 +79,11 @@ print(exec_result.kind, exec_result.rows_affected)
 The legacy callable `db.sql("SELECT ...")` still works and returns the
 tagged-union dataclass. `db.sql_one("SELECT ... LIMIT 1")` returns the
 first row dict (or `None`).
+
+> **Parameters are positional, not named.** The engine binds `$1` / `$2`
+> by index; there is no named-parameter binder. Passing a `dict` raises
+> `OCValidationError` with the positional rewrite in the message rather
+> than guessing an order for you.
 
 ## Vector (sync client)
 
@@ -249,11 +255,11 @@ hits = db.graph.graphsage_topk("users", "follows", "u1", k=10)
 res = db.sql.install_materialized_view(
     "daily_orders",
     "SELECT order_id, qty FROM trading.orders",
-    refresh_mode="manual",
+    refresh_mode="on_demand",   # default
 )
 print(res.rows_materialized, res.bytes_written, res.refresh_ts)
 
-# On-demand refresh — atomically overwrites the snapshot:
+# Full recompute — atomically overwrites the snapshot:
 db.sql.refresh_materialized_view("daily_orders")
 
 # Snapshot read:
@@ -261,6 +267,15 @@ view = db.sql.read_materialized_view("daily_orders")
 for row in view.rows:
     print(row)
 ```
+
+`refresh_mode` accepts exactly two values:
+
+| value | behaviour |
+| --- | --- |
+| `"on_demand"` (default) | The snapshot only changes when you call `refresh_materialized_view()`, which fully recomputes it. This is the mode to build against today. |
+| `"incremental"` | Apply-time maintenance as source rows are written. **Aggregate** views are behind a preview flag that ships OFF, so an incremental view over an aggregate query currently fails with `422`. |
+
+Anything else raises `OCValidationError` before the request is sent.
 
 ### Admin: per-tenant replication config
 

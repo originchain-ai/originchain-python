@@ -10,6 +10,7 @@ the right dataclass and that ``sql_one`` errors clearly for non-SELECT.
 from __future__ import annotations
 
 import json
+import warnings
 
 import httpx
 import pytest
@@ -126,7 +127,15 @@ def test_sql_query_returns_sql_result(mock_client) -> None:
     assert out.columns == ["a", "b"]
 
 
-def test_sql_query_forwards_params(mock_client) -> None:
+# ── Bind parameters ───────────────────────────────────────────────────
+# The `/sql` handler binds POSITIONALLY — `params` is a JSON array that
+# `$1` / `$2` index into. 0.5.x sent a named map, which the engine has no
+# binder for, so every parameterised query failed. Source of truth: the
+# TypeScript client (`params?: unknown[]`) and the Go client (variadic
+# `params ...any` marshalled straight into `body["params"]`).
+
+
+def test_sql_query_forwards_params_as_positional_array(mock_client) -> None:
     seen: dict = {}
 
     def handler(req: httpx.Request) -> httpx.Response:
@@ -134,8 +143,74 @@ def test_sql_query_forwards_params(mock_client) -> None:
         return httpx.Response(200, json={"kind": "select", "rows": []})
 
     client = mock_client(handler)
-    client.sql.query("SELECT * FROM t WHERE a = :a", params={"a": 1})
-    assert seen["body"] == {"sql": "SELECT * FROM t WHERE a = :a", "params": {"a": 1}}
+    client.sql.query(
+        "SELECT * FROM t WHERE a = $1 AND b = $2",
+        params=["AAPL", 50],
+    )
+    assert seen["body"] == {
+        "sql": "SELECT * FROM t WHERE a = $1 AND b = $2",
+        "params": ["AAPL", 50],
+    }
+    # Specifically a JSON array, not an object — a map is what broke.
+    assert isinstance(seen["body"]["params"], list)
+
+
+def test_sql_query_params_preserve_order_from_tuple(mock_client) -> None:
+    """Any sequence works, and $N ordering is the caller's order."""
+    seen: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(200, json={"kind": "select", "rows": []})
+
+    client = mock_client(handler)
+    client.sql.query("SELECT * FROM t WHERE a = $1 AND b = $2", params=(1, "x"))
+    assert seen["body"]["params"] == [1, "x"]
+
+
+def test_sql_query_empty_params_still_sends_array(mock_client) -> None:
+    """`params=[]` is not the same as omitting it — an explicit empty
+    array must still reach the wire so the caller's intent survives."""
+    seen: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(200, json={"kind": "select", "rows": []})
+
+    client = mock_client(handler)
+    client.sql.query("SELECT 1", params=[])
+    assert seen["body"] == {"sql": "SELECT 1", "params": []}
+
+
+def test_sql_query_rejects_named_param_mapping(mock_client) -> None:
+    """A dict is refused client-side with an actionable message rather
+    than being flattened into a guessed positional order."""
+    called = False
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={"kind": "select", "rows": []})
+
+    client = mock_client(handler)
+    with pytest.raises(OCValidationError) as exc:
+        client.sql.query("SELECT * FROM t WHERE a = :a", params={"a": 1})
+    msg = str(exc.value)
+    assert "positional" in msg
+    assert "$1" in msg
+    # No request should have been issued.
+    assert not called
+
+
+def test_sql_query_rejects_bare_string_params(mock_client) -> None:
+    """`params="AAPL"` would bind four one-character parameters if the
+    str were treated as a sequence."""
+    client = mock_client(
+        lambda req: httpx.Response(200, json={"kind": "select", "rows": []})
+    )
+    with pytest.raises(OCValidationError) as exc:
+        client.sql.query("SELECT * FROM t WHERE s = $1", params="AAPL")
+    assert "list or tuple" in str(exc.value)
 
 
 def test_sql_query_rejects_non_select(mock_client) -> None:
@@ -229,7 +304,7 @@ def test_sql_install_materialized_view(mock_client) -> None:
     out = client.sql.install_materialized_view(
         "daily_orders",
         "SELECT order_id, qty FROM trading.orders",
-        refresh_mode="manual",
+        refresh_mode="on_demand",
     )
     assert isinstance(out, MaterializedViewInstallResult)
     assert out.name == "daily_orders"
@@ -238,7 +313,7 @@ def test_sql_install_materialized_view(mock_client) -> None:
     assert out.refresh_ts == 1717804800
     assert seen["body"]["name"] == "daily_orders"
     assert seen["body"]["query"].startswith("SELECT")
-    assert seen["body"]["refresh_mode"] == "manual"
+    assert seen["body"]["refresh_mode"] == "on_demand"
     # `source_schema` is omitted from the body when caller doesn't
     # supply it — server derives it from the plan.
     assert "source_schema" not in seen["body"]
@@ -266,6 +341,97 @@ def test_sql_install_materialized_view_with_source_schema(mock_client) -> None:
         source_schema="trading.orders",
     )
     assert seen["body"]["source_schema"] == "trading.orders"
+
+
+# ── refresh_mode wire values ──────────────────────────────────────────
+# The engine's `RefreshMode` serde enum is `#[serde(rename_all =
+# "snake_case")]` over `OnDemand | Incremental`, so the only two values
+# it accepts are `on_demand` and `incremental`; unknown values are a hard
+# 400, not a silent fallback. 0.5.x sent `manual` / `on_write`, so every
+# install failed. Source of truth: `oc-query/src/materialized_view.rs`.
+
+
+def _mv_body_capturing_client(mock_client, seen: dict):
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(
+            200,
+            json={
+                "name": "v1",
+                "rows_materialized": 0,
+                "bytes_written": 0,
+                "refresh_ts": 1717804800,
+            },
+        )
+
+    return mock_client(handler)
+
+
+def test_sql_install_materialized_view_defaults_to_on_demand(mock_client) -> None:
+    seen: dict = {}
+    client = _mv_body_capturing_client(mock_client, seen)
+    client.sql.install_materialized_view("v1", "SELECT * FROM trading.orders")
+    assert seen["body"]["refresh_mode"] == "on_demand"
+
+
+def test_sql_install_materialized_view_incremental(mock_client) -> None:
+    seen: dict = {}
+    client = _mv_body_capturing_client(mock_client, seen)
+    client.sql.install_materialized_view(
+        "v1", "SELECT * FROM trading.orders", refresh_mode="incremental"
+    )
+    assert seen["body"]["refresh_mode"] == "incremental"
+
+
+@pytest.mark.parametrize(
+    ("legacy", "wire"),
+    [("manual", "on_demand"), ("on_write", "incremental")],
+)
+def test_sql_install_materialized_view_legacy_mode_alias(
+    mock_client, legacy: str, wire: str
+) -> None:
+    """The dead 0.5.x names map onto the real wire values and warn."""
+    seen: dict = {}
+    client = _mv_body_capturing_client(mock_client, seen)
+    with pytest.warns(DeprecationWarning, match=legacy):
+        client.sql.install_materialized_view(
+            "v1", "SELECT * FROM trading.orders", refresh_mode=legacy
+        )
+    assert seen["body"]["refresh_mode"] == wire
+
+
+def test_sql_install_materialized_view_rejects_unknown_mode(mock_client) -> None:
+    """Unknown modes are refused locally — the engine 400s on them, and
+    a client-side error names the valid values."""
+    called = False
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={})
+
+    client = mock_client(handler)
+    with pytest.raises(OCValidationError) as exc:
+        client.sql.install_materialized_view(
+            "v1", "SELECT * FROM trading.orders", refresh_mode="on_read"
+        )
+    msg = str(exc.value)
+    assert "on_demand" in msg and "incremental" in msg
+    assert not called
+
+
+def test_sql_install_materialized_view_never_sends_dead_values(mock_client) -> None:
+    """Regression guard: `manual` / `on_write` must never reach the wire
+    under any input — that's the bug this release fixes."""
+    for supplied in ("on_demand", "incremental", "manual", "on_write"):
+        seen: dict = {}
+        client = _mv_body_capturing_client(mock_client, seen)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            client.sql.install_materialized_view(
+                "v1", "SELECT * FROM trading.orders", refresh_mode=supplied
+            )
+        assert seen["body"]["refresh_mode"] in ("on_demand", "incremental")
 
 
 def test_sql_install_materialized_view_error_400(mock_client) -> None:

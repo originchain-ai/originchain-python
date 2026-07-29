@@ -21,7 +21,8 @@ drifts get caught by tests that mock the documented JSON.
 from __future__ import annotations
 
 import json as _json
-from typing import TYPE_CHECKING, Any, List, Literal, Mapping, Optional
+import warnings
+from typing import TYPE_CHECKING, Any, List, Literal, Mapping, Optional, Sequence
 
 from .models import (
     CentroidsPreview,
@@ -50,6 +51,96 @@ if TYPE_CHECKING:
     from .client import OriginChain
 
 
+# ────────────────── materialized-view refresh modes ──────────────────
+#
+# The wire value space is exactly the engine's `RefreshMode` serde enum
+# (`oc-query/src/materialized_view.rs`), which is `#[serde(rename_all =
+# "snake_case")]` over `OnDemand | Incremental` — so `"on_demand"` and
+# `"incremental"`, and nothing else. Unknown values are a HARD error on
+# the engine (400), not a silent fallback, so the SDK validates
+# client-side and never puts a typo on the wire.
+
+RefreshMode = Literal["on_demand", "incremental"]
+
+#: Accepted wire values, in the order they're listed in error messages.
+REFRESH_MODES: tuple[RefreshMode, ...] = ("on_demand", "incremental")
+
+#: 0.5.x public names → the wire value they meant. These never worked:
+#: `"manual"` / `"on_write"` were rejected by the engine, so every
+#: `install_materialized_view` call from 0.5.x failed. Kept as a
+#: deprecation shim so pinned code starts working instead of raising.
+_REFRESH_MODE_ALIASES = {
+    "manual": "on_demand",
+    "on_write": "incremental",
+}
+
+
+def _normalize_refresh_mode(mode: str) -> str:
+    """Map a caller-supplied refresh mode onto the engine's wire value.
+
+    Accepts the two wire values (`on_demand` / `incremental`) plus the
+    two deprecated 0.5.x names, which warn. Anything else raises
+    locally — the engine would 400 anyway, and a client-side error
+    names the valid values."""
+    if mode in REFRESH_MODES:
+        return mode
+    if mode in _REFRESH_MODE_ALIASES:
+        wire = _REFRESH_MODE_ALIASES[mode]
+        warnings.warn(
+            f"refresh_mode={mode!r} is deprecated and never worked "
+            f"(the engine rejects it); sending {wire!r} instead. Pass "
+            f"refresh_mode={wire!r} explicitly — the alias is removed "
+            "in 1.0.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        return wire
+    from .errors import OCValidationError
+
+    raise OCValidationError(
+        f"refresh_mode={mode!r} is not a valid materialized-view refresh "
+        f"mode; expected one of {', '.join(repr(m) for m in REFRESH_MODES)}"
+    )
+
+
+# ───────────────────── SQL bind parameters ─────────────────────
+#
+# The `/sql` handler binds POSITIONALLY: the request body's `params`
+# field is a JSON array, and `$1` / `$2` / … index into it. There is no
+# named-parameter binder on the engine, so a `{"a": 1}` map is not a
+# thing the server can consume — 0.5.x sent one and every parameterised
+# query failed. Same shape as the TypeScript client's
+# `params?: unknown[]` and the Go client's variadic `params ...any`.
+
+
+def _positional_params(params: Sequence[Any]) -> list[Any]:
+    """Coerce caller-supplied bind parameters into the wire array.
+
+    Rejects mappings loudly. Flattening a dict into positional order
+    would put values on the wire in an order the caller never wrote
+    down — a silently-wrong-row bug — and the accompanying SQL would
+    still carry named placeholders the engine can't parse. Strings and
+    bytes are rejected for the same class of reason: they're
+    ``Sequence`` instances, so ``params="AAPL"`` would otherwise bind
+    four single-character parameters."""
+    from .errors import OCValidationError
+
+    if isinstance(params, Mapping):
+        raise OCValidationError(
+            "sql params must be a positional sequence, not a mapping — the "
+            "engine binds $1/$2 by position and has no named-parameter "
+            'binder. Rewrite `query("... WHERE a = :a", params={"a": 1})` as '
+            '`query("... WHERE a = $1", params=[1])`.'
+        )
+    if isinstance(params, (str, bytes)):
+        raise OCValidationError(
+            "sql params must be a list or tuple of values, not a "
+            f"{type(params).__name__} — wrap a single parameter in a list: "
+            f"params=[{params!r}]."
+        )
+    return list(params)
+
+
 # ─────────────────────────── SQL namespace ───────────────────────────
 
 
@@ -71,18 +162,32 @@ class _SqlNamespace:
     def query(
         self,
         query: str,
-        params: Optional[Mapping[str, Any]] = None,
+        params: Optional[Sequence[Any]] = None,
     ) -> SqlResult:
         """Run a SELECT against the substrate.
 
-        ``params`` is forwarded as the ``params`` field on the request
-        body so server-side parameterised SQL works the same way it
-        does on the typed row routes. Returns a :class:`SqlResult`
-        with both the row list and (when the server emits it) the
-        column ordering."""
+        ``params`` binds **positionally**: pass a list/tuple whose
+        order matches the ``$1``, ``$2``, … placeholders in ``query``.
+        It is forwarded verbatim as a JSON array on the ``params``
+        field of the request body — the shape the ``/sql`` handler
+        binds (and the same shape the TypeScript and Go clients
+        send)::
+
+            client.sql.query(
+                "SELECT * FROM trading.orders WHERE symbol = $1 AND qty > $2",
+                params=["AAPL", 50],
+            )
+
+        A named ``dict`` is rejected with a clear error rather than
+        being silently flattened: the engine has no named-parameter
+        binder, so guessing an order would bind the wrong values to
+        the wrong placeholders.
+
+        Returns a :class:`SqlResult` with both the row list and (when
+        the server emits it) the column ordering."""
         body: dict[str, Any] = {"sql": query}
         if params is not None:
-            body["params"] = dict(params)
+            body["params"] = _positional_params(params)
         payload = self._p._request(
             "POST",
             f"/v1/tenants/{self._p.tenant}/sql",
@@ -117,20 +222,41 @@ class _SqlNamespace:
         self,
         name: str,
         query: str,
-        refresh_mode: Literal["manual", "on_write"] = "manual",
+        refresh_mode: RefreshMode = "on_demand",
         source_schema: Optional[str] = None,
     ) -> MaterializedViewInstallResult:
         """Install a materialized view: translate ``query``, run the
         initial materialization, and stamp the snapshot under
-        ``mv_snapshot_key`` in one WAL frame. ``refresh_mode="manual"``
-        is the only mode shipped today (``"on_write"`` is parsed but
-        falls back to manual; the on-write incremental path is a v2
-        punt). ``source_schema`` is an optional hint — when omitted, the
-        handler derives it from the plan's first scan target."""
+        ``mv_snapshot_key`` in one WAL frame.
+
+        ``refresh_mode`` is one of:
+
+        - ``"on_demand"`` (default) — the snapshot only changes when
+          you call :meth:`refresh_materialized_view`, which fully
+          recomputes it. This is the mode to build against today.
+        - ``"incremental"`` — apply-time maintenance: the view is
+          updated as source rows are written. **Aggregate** views are
+          behind a preview flag that ships OFF, so installing an
+          incremental view over an aggregate query currently fails
+          with ``422`` (:class:`~originchain.OCError` with
+          ``status=422``). Don't depend on it without confirming the
+          flag is on for your instance.
+
+        ``source_schema`` is an optional hint — when omitted, the
+        handler derives it from the plan's first scan target.
+
+        .. versionchanged:: 0.6.0
+           The 0.5.x values ``"manual"`` / ``"on_write"`` are
+           deprecated aliases for ``"on_demand"`` / ``"incremental"``.
+           The engine rejects the old names outright, so no 0.5.x call
+           to this method ever succeeded; the aliases exist only so
+           pinned code starts working. Any other value now raises
+           :class:`~originchain.OCValidationError` before the request
+           is sent."""
         body: dict[str, Any] = {
             "name": name,
             "query": query,
-            "refresh_mode": refresh_mode,
+            "refresh_mode": _normalize_refresh_mode(refresh_mode),
         }
         if source_schema is not None:
             body["source_schema"] = source_schema
