@@ -53,6 +53,21 @@ packages = ["originchain"]
 line-length = 100
 target-version = "py39"
 
+[tool.ruff.lint]
+# Pinned explicitly rather than inherited. Ruff's *default* rule set is
+# not stable across releases: this repo was linted clean under the
+# 0.5-era default (`E4`, `E7`, `E9`, `F`), and a later release widened
+# the default to include `UP`/`I`/`RUF`/`BLE`/`PYI`, which turned CI red
+# on an unchanged tree (the `dev` extra floats on `ruff>=0.5`). Naming
+# the set here makes the gate depend on this file instead of on
+# whichever ruff the runner happened to resolve.
+#
+# Widening the set is a deliberate, separate change - see the repo
+# backlog for the pyupgrade/isort sweep. Note `UP` in particular is not
+# a free win here: the package still supports Python 3.9, so PEP 604
+# unions are only safe in `from __future__ import annotations` modules.
+select = ["E4", "E7", "E9", "F"]
+
 [tool.ruff.lint.per-file-ignores]
 # Deliberate mid-file imports: client.py imports _namespaces after the
 # class definitions it depends on (circular-import avoidance); the

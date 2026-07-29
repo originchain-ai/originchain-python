@@ -106,7 +106,13 @@ step("fts.search", lambda: db.fts.search(P, "description", "widget"))
 step("graph.neighbors ->[p2]", check_neighbors)
 step("ask", lambda: db.ask("how many products cost more than 5", schemas=[P]))
 step("usage", lambda: db.usage())
-step("sql SELECT 1 (want-fail)", lambda: db.sql("SELECT 1"), expect_fail=True)
+# `SELECT 1` used to be the want-fail case: the engine had no
+# constant-select path and rejected a SELECT with no FROM. It answers
+# `{"1": 1}` now, so asserting failure fails the suite against a
+# working engine. Assert the live behaviour instead, and keep the
+# error-surfacing coverage on SQL that is unambiguously invalid.
+step("sql SELECT 1", lambda: db.sql("SELECT 1"))
+step("sql parse error (want-fail)", lambda: db.sql("SELECT FROM WHERE"), expect_fail=True)
 
 print("\n=== PYTHON SDK %s E2E (ns=%s) ===" % (getattr(__import__("originchain"), "__version__", "?"), NS))
 npass = 0
