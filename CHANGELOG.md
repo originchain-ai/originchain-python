@@ -5,12 +5,22 @@ All notable changes to the OriginChain Python SDK. See the repo-root
 
 ## [0.6.0] — 2026-07-29
 
-Two wire-format bug fixes. Both surfaces were **100% broken in 0.5.0** —
-neither ever produced a successful engine response — so nothing that
-works today changes behaviour.
+Three wire-format bug fixes. All three surfaces were **broken in
+0.5.0** — none ever reached the engine behaviour it advertised — so
+nothing that works today changes behaviour.
 
 ### Fixed
 
+- **`vector.topk(nprobe=...)` now sends the field the engine reads.**
+  0.5.0 sent `ivf_nprobe`; `VecTopkReq` declares `nprobe`. The struct
+  has no `deny_unknown_fields`, so serde dropped the key silently and
+  the query ran at the server default of `min(8, partitions)`. Unlike
+  the two bugs below this one returned a confident **200** with
+  quietly degraded recall rather than an error, which is why it went
+  unnoticed. `vector.topk` also gains the `index` parameter
+  (`"hnsw"` | `"ivf"` | `"ivf_pq"`): `nprobe` is only consulted on the
+  IVF arms, so without it the knob was inert even under the right
+  name.
 - **`sql.query(params=...)` now sends positional bind parameters.**
   0.5.0 sent `params` as a named JSON object (`{"a": 1}`). The `/sql`
   handler binds positionally: `params` is a JSON **array** and `$1` /
@@ -54,6 +64,11 @@ works today changes behaviour.
 
 ### Migration from 0.5.0
 
+- `db.vector.topk(t, q, nprobe=32)` →
+  `db.vector.topk(t, q, nprobe=32, index="ivf")` (or `"ivf_pq"`).
+  Without `index` the engine queries HNSW and ignores `nprobe`. Recall
+  and latency will change on any call that was passing `nprobe`,
+  because it now actually takes effect.
 - `db.sql.query("... WHERE s = :s", params={"s": "AAPL"})` →
   `db.sql.query("... WHERE s = $1", params=["AAPL"])`
 - `refresh_mode="manual"` → `refresh_mode="on_demand"`;
