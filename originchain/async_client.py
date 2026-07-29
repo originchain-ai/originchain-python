@@ -215,7 +215,7 @@ class AsyncOriginChain:
             http2=_HTTP2_AVAILABLE,
             headers={
                 "Authorization": f"Bearer {bearer}",
-                "User-Agent": user_agent or "originchain-python/0.5.0",
+                "User-Agent": user_agent or "originchain-python/0.6.0",
             },
         )
         self.schemas = _AsyncSchemas(self)
