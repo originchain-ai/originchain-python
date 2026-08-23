@@ -97,6 +97,91 @@ def test_sql_one_rejects_non_select(mock_client) -> None:
         client.sql_one("DELETE FROM t WHERE id='x'")
 
 
+# ── Write / DDL kinds through the legacy `client.sql(...)` callable ────────
+# The engine inline-executes UPDATE / DELETE / CREATE TABLE / DROP TABLE and
+# returns `{kind, schema, rows_affected|rows_deleted}` envelopes. The legacy
+# decoder only knew select/insert/delete-with-pk and raised
+# `ValueError: unknown SQL response kind` on update/createtable/droptable and
+# `KeyError: 'pk'` on the current pk-less delete shape — even though the
+# statement ran server-side. Regression coverage that all decode cleanly.
+
+
+def test_sql_update_returns_exec_result(mock_client) -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"kind": "update", "schema": "t", "rows_affected": 2}
+        )
+
+    client = mock_client(handler)
+    resp = client.sql("UPDATE t SET a = 1 WHERE b = 2")
+    assert isinstance(resp, SqlExecResult)
+    assert resp.kind == "update"
+    assert resp.rows_affected == 2
+    assert resp.schema == "t"
+
+
+def test_sql_delete_rows_affected_returns_exec_result(mock_client) -> None:
+    # Current engine shape: no `pk`, just a count. The legacy
+    # `{kind:delete, schema, pk}` shape still decodes to SqlDelete
+    # (see test_sql_delete_returns_pk) — backward compatible.
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"kind": "delete", "schema": "t", "rows_affected": 1}
+        )
+
+    client = mock_client(handler)
+    resp = client.sql("DELETE FROM t WHERE id = 1")
+    assert isinstance(resp, SqlExecResult)
+    assert resp.kind == "delete"
+    assert resp.rows_affected == 1
+
+
+def test_sql_createtable_returns_exec_result(mock_client) -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"kind": "createtable", "schema": "t", "created": True}
+        )
+
+    client = mock_client(handler)
+    resp = client.sql("CREATE TABLE t (id INT)")
+    assert isinstance(resp, SqlExecResult)
+    assert resp.kind == "createtable"
+    assert resp.schema == "t"
+
+
+def test_sql_droptable_surfaces_rows_deleted(mock_client) -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "kind": "droptable",
+                "schema": "t",
+                "dropped": True,
+                "rows_deleted": 5,
+            },
+        )
+
+    client = mock_client(handler)
+    resp = client.sql("DROP TABLE t")
+    assert isinstance(resp, SqlExecResult)
+    assert resp.kind == "droptable"
+    assert resp.rows_affected == 5  # rows_deleted surfaced via rows_affected
+
+
+def test_sql_unknown_kind_decodes_leniently(mock_client) -> None:
+    # Forward-compat: an unrecognised future kind decodes to SqlExecResult
+    # rather than raising, so an older SDK keeps working against a newer engine.
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"kind": "vacuum", "schema": "t", "rows_affected": 0}
+        )
+
+    client = mock_client(handler)
+    resp = client.sql("VACUUM t")
+    assert isinstance(resp, SqlExecResult)
+    assert resp.kind == "vacuum"
+
+
 # ─────────────────────── Typed-namespace v1 surface ───────────────────────
 # `client.sql.query` / `client.sql.execute`. The legacy callable
 # `client.sql("...")` still works (covered by tests above); the new
