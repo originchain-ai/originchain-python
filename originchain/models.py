@@ -37,13 +37,15 @@ class SqlSelect:
 
 @dataclass(frozen=True)
 class SqlInsert:
-    """``{"kind": "insert", "schema": "...", "rows": [...]}``. Translated
-    INSERT payload - the caller is expected to re-issue against
-    ``/v1/tenants/:t/rows/:schema`` with idempotency. We don't auto-
-    execute writes from ``/sql`` in v0; see preview_endpoints.rs."""
+    """``{"kind": "insert", "schema": "...", "inserted": N}``. The engine
+    inline-executes the INSERT and returns the affected-row count in
+    ``inserted``. ``rows`` is retained for the legacy translated-payload
+    shape (older engines echoed the typed rows here); against a current
+    engine it is empty and ``inserted`` carries the count."""
 
     schema: str
     rows: Tuple[Any, ...]
+    inserted: int = 0
     kind: str = "insert"
 
 
@@ -79,6 +81,7 @@ def _decode_sql_response(payload: Mapping[str, Any]) -> SqlResponse:
         return SqlInsert(
             schema=str(payload.get("schema", "")),
             rows=tuple(payload.get("rows", [])),
+            inserted=int(payload.get("inserted", 0)),
         )
     # Legacy translated-DELETE shape (``{schema, pk}``). The current engine
     # inline-executes and returns ``{schema, rows_affected}`` with no ``pk``,

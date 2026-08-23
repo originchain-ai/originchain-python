@@ -55,6 +55,21 @@ def test_sql_insert_returns_translation(mock_client) -> None:
     assert resp.rows == ({"order_id": "o1"},)
 
 
+def test_sql_insert_surfaces_inserted_count(mock_client) -> None:
+    # Current engine shape: inline-executed INSERT returns a count, no rows.
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"kind": "insert", "schema": "trading.orders", "inserted": 3}
+        )
+
+    client = mock_client(handler)
+    resp = client.sql("INSERT INTO trading.orders (id) VALUES (1), (2), (3)")
+    assert isinstance(resp, SqlInsert)
+    assert resp.schema == "trading.orders"
+    assert resp.inserted == 3
+    assert resp.rows == ()
+
+
 def test_sql_delete_returns_pk(mock_client) -> None:
     def handler(req: httpx.Request) -> httpx.Response:
         return httpx.Response(
