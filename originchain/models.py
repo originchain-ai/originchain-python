@@ -37,13 +37,15 @@ class SqlSelect:
 
 @dataclass(frozen=True)
 class SqlInsert:
-    """``{"kind": "insert", "schema": "...", "rows": [...]}``. Translated
-    INSERT payload - the caller is expected to re-issue against
-    ``/v1/tenants/:t/rows/:schema`` with idempotency. We don't auto-
-    execute writes from ``/sql`` in v0; see preview_endpoints.rs."""
+    """``{"kind": "insert", "schema": "...", "inserted": N}``. The engine
+    inline-executes the INSERT and returns the affected-row count in
+    ``inserted``. ``rows`` is retained for the legacy translated-payload
+    shape (older engines echoed the typed rows here); against a current
+    engine it is empty and ``inserted`` carries the count."""
 
     schema: str
     rows: Tuple[Any, ...]
+    inserted: int = 0
     kind: str = "insert"
 
 
@@ -57,26 +59,43 @@ class SqlDelete:
     kind: str = "delete"
 
 
-SqlResponse = Union[SqlSelect, SqlInsert, SqlDelete]
+SqlResponse = Union[SqlSelect, SqlInsert, SqlDelete, "SqlExecResult"]
 
 
 def _decode_sql_response(payload: Mapping[str, Any]) -> SqlResponse:
-    """Tagged-union decode. ``kind`` discriminates on the wire."""
+    """Tagged-union decode. ``kind`` discriminates on the wire.
+
+    ``select`` / ``insert`` decode to their typed row shapes. The engine's
+    write + DDL statements inline-execute and return an
+    ``{kind, schema, rows_affected}``-style envelope: ``update`` / ``delete``
+    / ``createtable`` / ``droptable`` — and any future kind — decode to
+    :class:`SqlExecResult`, which carries ``kind`` + best-effort
+    ``rows_affected`` (``rows_deleted`` for ``droptable``) + ``schema``.
+    Decoding an unrecognised ``kind`` rather than raising keeps an older SDK
+    working against a newer engine, matching the forward-compatibility
+    contract the dataclass decoders in this module already follow."""
     kind = payload.get("kind")
     if kind == "select":
-        rows = payload.get("rows", [])
-        return SqlSelect(rows=tuple(rows))
+        return SqlSelect(rows=tuple(payload.get("rows", [])))
     if kind == "insert":
         return SqlInsert(
-            schema=str(payload["schema"]),
+            schema=str(payload.get("schema", "")),
             rows=tuple(payload.get("rows", [])),
+            inserted=int(payload.get("inserted", 0)),
         )
-    if kind == "delete":
-        return SqlDelete(
-            schema=str(payload["schema"]),
-            pk=str(payload["pk"]),
-        )
-    raise ValueError(f"unknown SQL response kind: {kind!r}")
+    # Legacy translated-DELETE shape (``{schema, pk}``). The current engine
+    # inline-executes and returns ``{schema, rows_affected}`` with no ``pk``,
+    # which falls through to SqlExecResult below.
+    if kind == "delete" and payload.get("pk") is not None:
+        return SqlDelete(schema=str(payload["schema"]), pk=str(payload["pk"]))
+    affected = payload.get("rows_affected")
+    if affected is None:
+        affected = payload.get("rows_deleted", 0)
+    return SqlExecResult(
+        kind=str(kind),
+        rows_affected=int(affected),
+        schema=str(payload["schema"]) if payload.get("schema") is not None else None,
+    )
 
 
 # ─────────────────────────── Vector ───────────────────────────
