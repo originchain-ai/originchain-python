@@ -132,10 +132,17 @@ engine surfaces ship together in this release.
   neutral configuration slug (`entry` / `standard` / `advanced` /
   `custom`).
 
-### FTS (no API change — behavior upgraded server-side)
+### FTS (no API change)
 
-- Lemmatization is automatic when the table's analyzer config has
-  `lemmatizer="dictionary"`; 9 languages now supported
+- **Corrected 2026-09-14.** This entry originally read "Lemmatization is
+  automatic when the table's analyzer config has `lemmatizer="dictionary"`;
+  9 languages now supported". Both halves are withdrawn. No transport
+  accepts a `lemmatizer` configuration key in any spelling, and no
+  dictionary lemmatizer is selectable by a client. The per-language
+  dictionaries exist inside the engine, but nothing this SDK can send
+  resolves to one, so 0.5.0 changed no full-text behaviour you can reach.
+  `/v1/capabilities` → `fts_lemmatizers.supported` is the authority on
+  what is actually selectable.
 
 ### Packaging
 

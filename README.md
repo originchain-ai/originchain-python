@@ -291,9 +291,8 @@ print(cfg.replication_mode, cfg.installed)
 ### FTS lemmatization
 
 No SDK API change — `db.fts.install_synonyms(...)` /
-`install_stopwords(...)` are unchanged. Server-side, the analyzer now
-applies dictionary-based lemmatization across 9 languages when the
-table's analyzer config selects `lemmatizer="dictionary"`.
+`install_stopwords(...)` are unchanged, and they remain the only
+per-(table, field) analysis controls this client exposes.
 
 ## Versioning
 
