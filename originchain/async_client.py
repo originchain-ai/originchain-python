@@ -219,7 +219,7 @@ class AsyncOriginChain:
             limits=_pool_limits(keepalive_expiry),
             headers={
                 "Authorization": f"Bearer {bearer}",
-                "User-Agent": user_agent or "originchain-python/0.6.0",
+                "User-Agent": user_agent or "originchain-python/0.7.0",
             },
         )
         self.schemas = _AsyncSchemas(self)

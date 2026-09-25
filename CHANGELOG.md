@@ -3,6 +3,27 @@
 All notable changes to the OriginChain Python SDK. See the repo-root
 `CHANGELOG.md` for engine releases.
 
+## [0.7.0] — 2026-09-25
+
+Faster repeat calls from applications that call the API every few seconds.
+
+### Changed
+
+- **Idle connections are kept for 300 s** (was httpx's default of 5 s).
+  An application calling every few seconds used to re-open TCP + TLS on
+  most calls — two extra network round trips each time, ~45-50 ms per call
+  from a client one region away. The server never closes an idle keep-alive
+  connection; the shortest idle limit on the path is the network load
+  balancer's 350 s, so the client stays below it.
+- Pool sizes stay at httpx's defaults (100 connections, 20 kept alive),
+  now passed explicitly.
+
+### Added
+
+- `keepalive_expiry=` on `OriginChain(...)` and `AsyncOriginChain(...)`
+  (seconds; clamped to 0-340).
+- Default `User-Agent` is `originchain-python/0.7.0`.
+
 ## [0.6.0] — 2026-07-29
 
 Two wire-format bug fixes. Both surfaces were **100% broken in 0.5.0** —
