@@ -56,6 +56,26 @@ from .models import (
 # Default behaviour - override per-call if needed.
 DEFAULT_TIMEOUT_S = 30.0
 DEFAULT_MAX_RETRIES = 3
+# How long an idle pooled connection is kept for reuse. httpx's default is
+# 5 s, so an application calling every few seconds re-opened TCP + TLS on
+# most calls - two extra network round trips each time. OriginChain never
+# closes an idle keep-alive connection itself; the shortest idle limit on
+# the path is the network load balancer's 350 s, so stay below it.
+DEFAULT_KEEPALIVE_EXPIRY_S = 300.0
+MAX_KEEPALIVE_EXPIRY_S = 340.0
+
+
+def _pool_limits(keepalive_expiry: float) -> httpx.Limits:
+    """Connection-pool limits with a longer idle keep-alive.
+
+    Passes httpx's default pool sizes explicitly: ``httpx.Limits`` with only
+    ``keepalive_expiry`` set would make the pool unbounded."""
+    expiry = max(0.0, min(float(keepalive_expiry), MAX_KEEPALIVE_EXPIRY_S))
+    return httpx.Limits(
+        max_connections=100,
+        max_keepalive_connections=20,
+        keepalive_expiry=expiry,
+    )
 RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
@@ -282,6 +302,7 @@ class OriginChain:
         max_retries: int = DEFAULT_MAX_RETRIES,
         verify: bool | str = True,
         user_agent: Optional[str] = None,
+        keepalive_expiry: float = DEFAULT_KEEPALIVE_EXPIRY_S,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.bearer = bearer
@@ -292,9 +313,10 @@ class OriginChain:
             timeout=timeout,
             verify=verify,
             http2=_HTTP2_AVAILABLE,
+            limits=_pool_limits(keepalive_expiry),
             headers={
                 "Authorization": f"Bearer {bearer}",
-                "User-Agent": user_agent or "originchain-python/0.6.0",
+                "User-Agent": user_agent or "originchain-python/0.7.0",
             },
         )
         self.schemas = _Schemas(self)

@@ -24,12 +24,14 @@ from typing import Any, List, Literal, Mapping, Optional
 import httpx
 
 from .client import (
+    DEFAULT_KEEPALIVE_EXPIRY_S,
     DEFAULT_MAX_RETRIES,
     DEFAULT_TIMEOUT_S,
     RETRYABLE_STATUSES,
     _HTTP2_AVAILABLE,
     _MUTATING_METHODS,
     _new_idempotency_key,
+    _pool_limits,
 )
 from .errors import (
     OCAuthError,
@@ -203,6 +205,7 @@ class AsyncOriginChain:
         max_retries: int = DEFAULT_MAX_RETRIES,
         verify: bool | str = True,
         user_agent: Optional[str] = None,
+        keepalive_expiry: float = DEFAULT_KEEPALIVE_EXPIRY_S,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.bearer = bearer
@@ -213,9 +216,10 @@ class AsyncOriginChain:
             timeout=timeout,
             verify=verify,
             http2=_HTTP2_AVAILABLE,
+            limits=_pool_limits(keepalive_expiry),
             headers={
                 "Authorization": f"Bearer {bearer}",
-                "User-Agent": user_agent or "originchain-python/0.6.0",
+                "User-Agent": user_agent or "originchain-python/0.7.0",
             },
         )
         self.schemas = _AsyncSchemas(self)
