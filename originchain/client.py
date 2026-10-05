@@ -29,6 +29,7 @@ from importlib.util import find_spec
 # originchain` keeps HTTP/1.1 so existing installs don't break.
 _HTTP2_AVAILABLE = find_spec("h2") is not None
 
+from . import _diagnostics as _diag
 from .errors import (
     OCAuthError,
     OCError,
@@ -303,11 +304,16 @@ class OriginChain:
         verify: bool | str = True,
         user_agent: Optional[str] = None,
         keepalive_expiry: float = DEFAULT_KEEPALIVE_EXPIRY_S,
+        diagnostics: bool = False,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.bearer = bearer
         self.tenant = tenant
         self.max_retries = max_retries
+        # Opt-in client diagnostics (off by default); see `_diagnostics`.
+        self._diagnostics: _diag.SyncReporter | None = (
+            _diag.SyncReporter(self._send_diagnostics) if diagnostics else None
+        )
         self._client = httpx.Client(
             base_url=self.base_url,
             timeout=timeout,
@@ -546,7 +552,24 @@ class OriginChain:
     # ── Lifecycle ─────────────────────────────────────────────────────
 
     def close(self) -> None:
+        if self._diagnostics is not None:
+            self._diagnostics.close()  # sends what is queued first
         self._client.close()
+
+    def flush_diagnostics(self) -> None:
+        """Send any queued diagnostics now (for example before a short-lived
+        process exits). A no-op when diagnostics are off. Never raises."""
+        if self._diagnostics is not None:
+            self._diagnostics.flush()
+
+    def _send_diagnostics(self, batch: list[dict[str, Any]]) -> None:
+        # Straight to the engine, not through `_request`: a report never
+        # reports itself, retries, or carries correlation headers.
+        self._client.post(
+            f"/v1/tenants/{self.tenant}/diagnostics",
+            json={"events": batch},
+            timeout=_diag.SEND_TIMEOUT_S,
+        )
 
     def __enter__(self) -> "OriginChain":
         return self
@@ -576,8 +599,13 @@ class OriginChain:
                 headers = {"Idempotency-Key": _new_idempotency_key()}
             elif not any(k.lower() == "idempotency-key" for k in headers):
                 headers = {**headers, "Idempotency-Key": _new_idempotency_key()}
+        # One logical request id per call, the same on every retry; the attempt
+        # number changes. The engine records both next to its own request id.
+        logical_id, headers = _diag.correlate(headers)
+        report = self._diagnostics
         last_exc: Optional[Exception] = None
         for attempt in range(self.max_retries + 1):
+            started = time.perf_counter()
             try:
                 resp = self._client.request(
                     method,
@@ -585,16 +613,30 @@ class OriginChain:
                     params=params,
                     json=json,
                     content=content,
-                    headers=headers,
+                    headers=_diag.with_attempt(headers, attempt + 1),
                 )
             except httpx.RequestError as e:
                 last_exc = e
+                if report is not None:
+                    report.push(_diag.event(
+                        method=method, path=path, started=started,
+                        logical_request_id=logical_id, attempt=attempt + 1, failure=e,
+                    ))
                 if attempt < self.max_retries:
                     time.sleep(self._backoff(attempt))
                     continue
-                raise OCError(f"transport error: {e}") from e
+                err = OCError(f"transport error: {e}")
+                err.logical_request_id = logical_id
+                raise err from e
 
+            request_id = _diag.engine_request_id(resp.headers.get("X-OC-Request-Id"))
             if resp.status_code < 400:
+                if report is not None:
+                    report.push(_diag.event(
+                        method=method, path=path, started=started,
+                        logical_request_id=logical_id, attempt=attempt + 1,
+                        status=resp.status_code, request_id=request_id,
+                    ))
                 if resp.headers.get("X-OC-Replication", "").lower() == "degraded":
                     warnings.warn(
                         "leader returned 200 but follower(s) didn't ack within"
@@ -604,12 +646,24 @@ class OriginChain:
                     )
                 return resp
 
+            if report is not None:
+                report.push(_diag.event(
+                    method=method, path=path, started=started,
+                    logical_request_id=logical_id, attempt=attempt + 1,
+                    status=resp.status_code, request_id=request_id,
+                    code=_diag.error_code(_json_or_none(resp)),
+                ))
             if resp.status_code in RETRYABLE_STATUSES and attempt < self.max_retries:
                 wait = self._retry_after(resp) or self._backoff(attempt)
                 time.sleep(wait)
                 continue
 
-            self._raise_for(resp)
+            try:
+                self._raise_for(resp)
+            except OCError as err:
+                err.request_id = request_id
+                err.logical_request_id = logical_id
+                raise
         # _raise_for never returns; loop exhaustion only via transport.
         raise OCError(f"request failed after retries: {last_exc}")
 
@@ -664,6 +718,13 @@ class OriginChain:
         if 500 <= status < 600:
             raise OCServerError(msg or f"server error {status}", status=status, body=body)
         raise OCError(msg or f"unexpected status {status}", status=status, body=body)
+
+
+def _json_or_none(resp: httpx.Response) -> Any:
+    try:
+        return resp.json()
+    except ValueError:  # not JSON (includes a body that is not valid UTF-8)
+        return None
 
 
 __all__ = ["OriginChain"]

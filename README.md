@@ -202,6 +202,51 @@ within the configured timeout, the client emits an
 the warning surfaces a follower-lag signal callers can monitor or page
 on.
 
+Every `OCError` carries two ids:
+
+- `request_id` is the engine's id for the request (`X-OC-Request-Id`). Include
+  it in a support request: it identifies the exact record on your engine.
+- `logical_request_id` is the id the client sent with the call
+  (`X-OC-Logical-Request-Id`, a UUID). It stays the same on every retry of the
+  call, while `X-OC-Attempt` counts 1, 2, ... The engine records both next to
+  its own id.
+
+```python
+from originchain import OCError
+
+try:
+    db.sql("SELECT * FROM shop.orders")
+except OCError as e:
+    log.error("query failed: %s (request %s)", e, e.request_id)
+```
+
+## Diagnostics
+
+Diagnostics are off by default. Turn them on to let OriginChain support see what
+your application saw of its calls, not only what the engine saw:
+
+```python
+db = OriginChain.from_env(diagnostics=True)          # or AsyncOriginChain
+```
+
+With diagnostics on, the client reports each attempt of each call to your own
+engine, with your bearer token, from a background thread (or task, for the
+async client):
+
+- the method and path, the outcome and duration;
+- the HTTP status received, or that the request was not sent or got no response;
+- the request ids above, and the engine's error code when it returned one.
+
+The engine keeps only its route template for the path (for example
+`/v1/tenants/:tenant/vector/:table/topk`), so table, key and index names stay on
+your engine. Query strings are removed before anything is queued. SQL,
+parameters, row data, search text, error messages and keys are never sent.
+
+Reporting never slows or fails your calls. Reports wait in a small bounded
+queue and are sent at most once a second; a report that cannot be sent is
+dropped. `close()` / `aclose()` send what is still queued; call
+`flush_diagnostics()` to send it earlier.
+
 ## What's new in 0.5
 
 0.5.0 wires up the engine endpoints that shipped after the

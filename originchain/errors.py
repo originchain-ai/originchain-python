@@ -27,6 +27,12 @@ class OCError(Exception):
         super().__init__(message)
         self.status = status
         self.body = body
+        #: The engine's id for the request (``X-OC-Request-Id``), when it
+        #: answered. Quote it in a support request: it names the exact record.
+        self.request_id: str | None = None
+        #: The id this client sent for the call (``X-OC-Logical-Request-Id``),
+        #: the same on every retry of it.
+        self.logical_request_id: str | None = None
 
 
 class OCAuthError(OCError):
