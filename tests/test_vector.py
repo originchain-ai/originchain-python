@@ -195,7 +195,9 @@ def test_vector_ns_topk_with_filter_and_nprobe(mock_client) -> None:
     def handler(req: httpx.Request) -> httpx.Response:
         body = json.loads(req.content)
         assert body["filter"] == {"tag": "alpha"}
-        assert body["ivf_nprobe"] == 8
+        # `VecTopkReq.nprobe` — the engine has no `ivf_nprobe` field.
+        assert body["nprobe"] == 8
+        assert body["index"] == "ivf"
         return httpx.Response(200, json=[])
 
     client = mock_client(handler)
@@ -206,8 +208,47 @@ def test_vector_ns_topk_with_filter_and_nprobe(mock_client) -> None:
         metric="dot",
         filter={"tag": "alpha"},
         nprobe=8,
+        index="ivf",
     )
     assert out == []
+
+
+def test_vector_ns_topk_never_sends_ivf_nprobe(mock_client) -> None:
+    """Regression guard for the 0.6.0 wire-name bug.
+
+    `nprobe` was sent as `ivf_nprobe`, which `VecTopkReq` does not
+    declare. The struct has no `deny_unknown_fields`, so serde dropped
+    it silently and the query ran at the server default — a 200 with
+    quietly degraded recall rather than an error. Nothing may put that
+    key back on the wire.
+    """
+    seen: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(200, json=[])
+
+    client = mock_client(handler)
+    client.vector.topk("embeddings", [0.1, 0.2, 0.3], nprobe=64, index="ivf_pq")
+    assert "ivf_nprobe" not in seen["body"]
+    assert seen["body"]["nprobe"] == 64
+    assert seen["body"]["index"] == "ivf_pq"
+
+
+def test_vector_ns_topk_omits_index_and_nprobe_when_unset(mock_client) -> None:
+    """Neither key is sent unless asked for, so the engine keeps its
+    own defaults (`index` → HNSW, `nprobe` → `min(8, partitions)`)."""
+    seen: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(200, json=[])
+
+    client = mock_client(handler)
+    client.vector.topk("embeddings", [0.1, 0.2, 0.3])
+    assert "index" not in seen["body"]
+    assert "nprobe" not in seen["body"]
+    assert "ivf_nprobe" not in seen["body"]
 
 
 def test_vector_ns_delete(mock_client) -> None:

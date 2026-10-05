@@ -365,7 +365,20 @@ class _VectorNamespace:
         metric: Literal["cosine", "dot", "l2", "manhattan"] = "cosine",
         filter: Optional[Mapping[str, Any]] = None,
         nprobe: Optional[int] = None,
+        index: Optional[Literal["hnsw", "ivf", "ivf_pq"]] = None,
     ) -> list[VectorHitV2]:
+        """Nearest-neighbour search over ``table``.
+
+        ``index`` selects the dense index family to query and must
+        match the one the vectors were written under — ``"hnsw"``
+        (the server default), ``"ivf"`` or ``"ivf_pq"``.
+
+        ``nprobe`` is the IVF/IVF-PQ tuning knob: the number of cells
+        the query visits. Higher = better recall, more work. It is
+        **only** consulted on the ``"ivf"`` and ``"ivf_pq"`` arms, so
+        passing it without ``index`` has no effect. Absent → the
+        server default of ``min(8, partitions)``.
+        """
         body: dict[str, Any] = {
             "query": list(query),
             "k": k,
@@ -374,11 +387,10 @@ class _VectorNamespace:
         }
         if filter is not None:
             body["filter"] = dict(filter)
-        # `nprobe` is the IVF tuning knob — the server reads it under
-        # `ivf_nprobe` to disambiguate from the legacy HNSW `ef_search`
-        # hint. Absent → server default for the table's index kind.
+        if index is not None:
+            body["index"] = index
         if nprobe is not None:
-            body["ivf_nprobe"] = nprobe
+            body["nprobe"] = nprobe
         hits = self._p._request(
             "POST",
             f"/v1/tenants/{self._p.tenant}/vector/{table}/topk",

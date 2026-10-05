@@ -96,7 +96,8 @@ hits = db.vector.topk(
     k=5,
     metric="cosine",
     filter={"src": "wiki"},   # optional metadata filter
-    nprobe=8,                  # optional IVF tuning knob
+    index="ivf",              # index family: hnsw (default) | ivf | ivf_pq
+    nprobe=8,                 # cells visited; ivf / ivf_pq only
 )
 for h in hits:
     print(h.vec_id, h.score, h.metadata)
@@ -107,6 +108,10 @@ db.vector.delete("embeddings", "doc-1")
 res = db.vector.install_centroids("embeddings", centroids=[[...], [...]])
 print(res.installed, res.partitions, res.dim)
 ```
+
+`index` must match the family the vectors were written under; it
+defaults to HNSW server-side. `nprobe` is read only on the `ivf` and
+`ivf_pq` arms, so passing it without `index` does nothing.
 
 The legacy `db.vector_put(...)` / `db.vector_topk(...)` methods stay
 available for code written before the typed namespace landed.
