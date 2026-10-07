@@ -3,6 +3,24 @@
 All notable changes to the OriginChain Python SDK. See the repo-root
 `CHANGELOG.md` for engine releases.
 
+## [Unreleased]
+
+## [0.8.0] — 2026-10-07
+
+### Added
+
+- **Request ids on every error.** `OCError.request_id` is the engine's id for
+  the request (`X-OC-Request-Id`), to quote in a support request.
+  `OCError.logical_request_id` is the id the client sent.
+- **Request correlation.** Every call sends `X-OC-Logical-Request-Id` (a UUID,
+  the same on every retry of the call) and `X-OC-Attempt` (1, 2, ...), which the
+  engine records next to its own request id.
+- **Opt-in diagnostics** (`diagnostics=True`, default off, both clients): each
+  attempt's method, path, outcome, duration, status and request ids are reported
+  to your own engine, which keeps only the route template. See the README's
+  "Diagnostics" section. `flush_diagnostics()` sends anything queued; `close()`
+  and `aclose()` do too.
+
 ## [0.7.0] — 2026-09-25
 
 Faster repeat calls from applications that call the API every few seconds.
