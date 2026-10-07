@@ -5,6 +5,8 @@ All notable changes to the OriginChain Python SDK. See the repo-root
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-10-07
+
 ### Added
 
 - **Request ids on every error.** `OCError.request_id` is the engine's id for
